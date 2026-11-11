@@ -127,6 +127,15 @@ let DEPTH24: i32 = 17;
 let DEPTH32F: i32 = 18;
 let DEPTH24_STENCIL8: i32 = 19;
 let DEPTH: i32 = 20;
+// Block-compressed, SAMPLED only and uploaded in whole blocks: BC on desktop
+// GPUs, ASTC on phones, tablets and Apple silicon. format_supported says which.
+let BC1: i32 = 21;
+let BC3: i32 = 22;
+let BC7: i32 = 23;
+let ASTC_4x4: i32 = 24;
+let ASTC_5x5: i32 = 25;
+let ASTC_6x6: i32 = 26;
+let ASTC_8x8: i32 = 27;
 
 // Samplers.
 let NEAREST: i32 = 0;
@@ -671,6 +680,9 @@ fn save_png(t: Texture, path: const u8[:]) -> bool {
 fn screenshot(path: const u8[:]) -> bool { save_png(screen(), path) }
 // Fills mips 1 and up from mip 0. Not inside a pass.
 extern fn generate_mips(t: Texture) = "gs_gfx_generate_mips";
+// Whether this device makes a 2D texture of `format` with `usage`: what a
+// compressed format needs asking before use, and a fallback is chosen by.
+extern fn format_supported(format: i32, usage: i32) -> bool = "gs_gfx_format_supported";
 extern fn texture_info_into(t: Texture, out: TextureDesc&) -> bool = "gs_gfx_texture_info";
 fn texture_info(t: Texture) -> TextureDesc {
     var d = TextureDesc { width: 0, height: 0 };
