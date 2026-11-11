@@ -148,6 +148,7 @@ static void gfx_init_tables(void) {
 /* --- command buffers ------------------------------------------------------- */
 
 SDL_GPUCommandBuffer *gfx_cmd(void) {
+    gfx.gpu_work = true;
     if (!gfx.cmd) {
         gfx.cmd = SDL_AcquireGPUCommandBuffer(gfx.dev);
         if (!gfx.cmd) gfx_sdl_fail("acquiring a command buffer");
@@ -343,6 +344,12 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
     gfx_init_tables();
     SDL_SetAssertionHandler(gfx_assert_handler, NULL);
     SDL_SetHint(SDL_HINT_APP_NAME, "Goose");
+#ifdef SDL_PLATFORM_ANDROID
+    /* On Android each pass of SDL_WaitEventTimeout() pushes a new poll sentinel,
+       which wakes the wait at once, so the idle wait in frame() would spin. With
+       no sentinel it blocks until an event; frame() drains its events anyway. */
+    SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+#endif
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         if (windowed) return gfx_sdl_fail("initializing SDL video");
         /* With no display to open a window on, the offscreen video driver
@@ -496,18 +503,24 @@ void gs_gfx_quit(void) { gfx.quit = true; }
 
 /* --- frames ------------------------------------------------------------------ */
 
+/* The longest frame() waits for an event after a frame that drew nothing, and
+   how many frames it tries to show a screen the window had no image for. */
+#define GFX_IDLE_WAIT_MS 1000
+#define GFX_PRESENT_TRIES 8
+
 /* Shows the screen in the window: a blit into the swapchain texture, which
-   may be missing (a minimized window), in which case nothing is shown. */
-static void gfx_present(void) {
+   may be missing (a minimized window, or a surface being recreated), in which
+   case nothing is shown and it returns false. */
+static bool gfx_present(void) {
     SDL_GPUCommandBuffer *cb = gfx_cmd();
-    if (!cb) return;
+    if (!cb) return false;
     SDL_GPUTexture *swap = NULL;
     Uint32 sw = 0, sh = 0;
     if (!SDL_WaitAndAcquireGPUSwapchainTexture(cb, gfx.window, &swap, &sw, &sh)) {
         gfx_sdl_fail("acquiring the window's image");
-        return;
+        return false;
     }
-    if (!swap) return;
+    if (!swap) return false;
     SDL_GPUBlitInfo bi;
     SDL_zero(bi);
     bi.source.texture = gfx_texture_slot_of(gfx.screen)->tex;
@@ -520,6 +533,7 @@ static void gfx_present(void) {
     bi.filter = sw == (Uint32)gfx.width && sh == (Uint32)gfx.height ? SDL_GPU_FILTER_NEAREST
                                                                      : SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(cb, &bi);
+    return true;
 }
 
 /* A new event at the end of this frame's list. */
@@ -619,9 +633,24 @@ uint8_t gs_gfx_frame(void) {
         gfx_misuse("frame() inside a %s pass: end the pass first", gfx.pass ? "render" : "compute");
         return 0;
     }
-    /* The first call starts the first frame; every later one ends one. */
-    if (gfx.window && gfx.frames > 0) gfx_present();
+    /* The first call starts the first frame; every later one ends one. A frame that
+       drew nothing shows nothing new, so it isn't presented, and the next one waits
+       for an event (up to GFX_IDLE_WAIT_MS, so a program's timers still run) instead
+       of spinning: an idle program uses no GPU and next to no CPU. */
+    bool drew = gfx.gpu_work || gfx.expose > 0;
+    if (gfx.window && gfx.frames > 0 && drew) {
+        /* Android recreates the surface on resume, and the first frames after it
+           may get no image: keep trying for a few frames rather than wait. */
+        if (gfx_present()) gfx.expose = 0;
+        else if (gfx.gpu_work) gfx.expose = GFX_PRESENT_TRIES;
+        else gfx.expose--;
+    }
     gfx_submit();
+    gfx.gpu_work = false;
+    if (gfx.window && gfx.frames > 0 && !drew) {
+        SDL_WaitEventTimeout(NULL, GFX_IDLE_WAIT_MS);
+        gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
+    }
     memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
     memset(gfx.released_keys, 0, sizeof gfx.released_keys);
     gfx.pressed_buttons = gfx.released_buttons = 0;
@@ -691,6 +720,13 @@ uint8_t gs_gfx_frame(void) {
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 gfx_update_input_scale();
                 resized = true;
+                gfx.expose = GFX_PRESENT_TRIES;
+                break;
+            case SDL_EVENT_WINDOW_EXPOSED:
+            case SDL_EVENT_WINDOW_SHOWN:
+            case SDL_EVENT_WINDOW_RESTORED:
+            case SDL_EVENT_DID_ENTER_FOREGROUND:
+                gfx.expose = GFX_PRESENT_TRIES;
                 break;
             default:
                 if (gfx.inject_event && e.type == gfx.inject_event && e.user.code >= 0 &&
