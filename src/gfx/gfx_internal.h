@@ -187,6 +187,9 @@ typedef struct {
        presents only then, and waits for an event when neither holds. */
     bool gpu_work;
     int expose;
+    /* The GPU device was lost (an SDL call failed with VK_ERROR_DEVICE_LOST):
+       nothing more is presented or submitted, and frame() returns false. */
+    bool lost;
 
     char error[1024];
     int64_t misuse;
