@@ -362,7 +362,19 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
 #endif
     const char *env = SDL_getenv("GOOSE_GFX_DEBUG");
     if (env) debug = SDL_atoi(env) != 0;
-    gfx.dev = SDL_CreateGPUDevice(formats, debug, NULL);
+    /* Goose's shaders never write gl_ClipDistance, and SDL_GPU otherwise requires the
+       Vulkan feature, which Mali GPUs such as the Galaxy Tab A11+'s lack. */
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN,
+                           (formats & SDL_GPU_SHADERFORMAT_SPIRV) != 0);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN,
+                           (formats & SDL_GPU_SHADERFORMAT_MSL) != 0);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXBC_BOOLEAN,
+                           (formats & SDL_GPU_SHADERFORMAT_DXBC) != 0);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debug);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
+    gfx.dev = SDL_CreateGPUDeviceWithProperties(props);
+    SDL_DestroyProperties(props);
     if (!gfx.dev) {
         gfx_fail("no GPU device: %s", SDL_GetError());
         gs_gfx_close();
