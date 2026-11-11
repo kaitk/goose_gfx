@@ -6,6 +6,10 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#ifdef SDL_PLATFORM_IOS
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 gfx_state gfx;
 
 /* How many times gfx was opened, which close() leaves: handles from an
@@ -537,6 +541,46 @@ void gs_gfx_quit(void) { gfx.quit = true; }
 #define GFX_IDLE_WAIT_MS 1000
 #define GFX_PRESENT_TRIES 8
 
+#ifdef SDL_PLATFORM_IOS
+/* UIKit's video driver has no WaitEventTimeout, so SDL_WaitEventTimeout() polls:
+   it pumps the run loop for 2 us and sleeps 1 ms, a thousand times a second. The
+   idle wait runs the main run loop itself instead, which sleeps until a source
+   fires (a touch, the system) or the timeout. An event pushed from another thread
+   (an SDL timer's) signals a source of its own, so it ends the wait too; a source
+   stays signalled until handled, so a push just before the wait is not lost. */
+static CFRunLoopRef gfx_main_loop;
+static CFRunLoopSourceRef gfx_wake_source;
+
+static void gfx_wake_perform(void *info) { (void)info; }
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e) {
+    (void)userdata;
+    (void)e;
+    if (!SDL_IsMainThread()) {
+        CFRunLoopSourceSignal(gfx_wake_source);
+        CFRunLoopWakeUp(gfx_main_loop);
+    }
+    return true;
+}
+
+static void gfx_idle_wait(int ms) {
+    if (!gfx_wake_source) {
+        CFRunLoopSourceContext c;
+        SDL_zero(c);
+        c.perform = gfx_wake_perform;
+        gfx_main_loop = CFRunLoopGetCurrent();
+        gfx_wake_source = CFRunLoopSourceCreate(NULL, 0, &c);
+        CFRunLoopAddSource(gfx_main_loop, gfx_wake_source, kCFRunLoopDefaultMode);
+        SDL_AddEventWatch(gfx_wake_watch, NULL);
+    }
+    SDL_PumpEvents();
+    if (SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST)) return;
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, ms / 1000.0, true);
+}
+#else
+static void gfx_idle_wait(int ms) { SDL_WaitEventTimeout(NULL, ms); }
+#endif
+
 /* Shows the screen in the window: a blit into the swapchain texture, which
    may be missing (a minimized window, or a surface being recreated), in which
    case nothing is shown and it returns false. */
@@ -781,7 +825,7 @@ uint8_t gs_gfx_frame(void) {
     gfx_submit();
     gfx.gpu_work = false;
     if (gfx.window && gfx.frames > 0 && !drew) {
-        SDL_WaitEventTimeout(NULL, GFX_IDLE_WAIT_MS);
+        gfx_idle_wait(GFX_IDLE_WAIT_MS);
         gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
     }
     memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
