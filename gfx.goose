@@ -54,6 +54,9 @@ let WINDOW_HIDDEN: i32 = 2;
 let WINDOW_FULLSCREEN: i32 = 4;
 let NO_VSYNC: i32 = 16;
 let DEBUG: i32 = 32;            // validation layers, where installed; on in a debug build of gfx
+// A window, input, events and time, and no GPU device: another renderer draws
+// into native_window() and tells presented() what it showed each frame.
+let WINDOW_ONLY: i32 = 64;
 
 // System cursor shapes.
 let CURSOR_DEFAULT: i32 = 0;
@@ -327,6 +330,16 @@ fn open(title: const u8[:], width: i64, height: i64) -> bool { open(title, width
 // shows: for tests, and for tools that only compute or render to files.
 extern fn open_headless(width: i64, height: i64, flags: i64) -> bool = "gs_gfx_open_headless";
 fn open_headless(width: i64, height: i64) -> bool { open_headless(width, height, 0) }
+// WINDOW_ONLY: the window's native handle for the renderer that draws into
+// it, as a u64: a CAMetalLayer on Apple's systems, the HWND on Windows, the
+// ANativeWindow on Android; 0 headless.
+extern fn native_window() -> u64 = "gs_gfx_native_window";
+// WINDOW_ONLY: whether the renderer showed this frame. A frame that showed
+// nothing makes the next frame() wait for an event, as gfx's own frames do.
+extern fn presented(shown: bool) = "gs_gfx_presented";
+// WINDOW_ONLY: the window was exposed, shown or resized, so the renderer
+// presents this frame though nothing changed.
+extern fn needs_present() -> bool = "gs_gfx_needs_present";
 extern fn close_raw() = "gs_gfx_close";
 fn close() {
     check();
