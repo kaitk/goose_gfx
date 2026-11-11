@@ -181,6 +181,12 @@ typedef struct {
     uint64_t start_ns, last_ns;
     double delta;
     int64_t frames;
+    /* Whether anything used the GPU since the last frame(), and how many more frames
+       should try to show the screen in the window though nothing was drawn (it was
+       exposed, restored, or resized, or a drawn frame got no image): frame()
+       presents only then, and waits for an event when neither holds. */
+    bool gpu_work;
+    int expose;
 
     char error[1024];
     int64_t misuse;
