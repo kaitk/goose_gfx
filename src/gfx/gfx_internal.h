@@ -119,6 +119,12 @@ typedef struct {
     SDL_Window *window;
     bool video_inited;
     bool gamepad_inited;
+    /* WINDOW_ONLY: open with a window and no device; another renderer draws
+       into the native window (native), and says when it presented. */
+    bool platform_only;
+    void *native;
+    SDL_MetalView metal_view;
+    bool presented;
     SDL_GPUShaderFormat format;         /* what shaders are handed over as */
     int64_t flags;
 
@@ -215,6 +221,8 @@ bool gfx_sdl_fail(const char *what);
 
 /* True inside open() .. close(); a misuse to call `what` otherwise. */
 bool gfx_need_device(const char *what);
+/* gfx is open, with a device or WINDOW_ONLY. */
+bool gfx_need_open(const char *what);
 
 /* --- shared helpers ------------------------------------------------------- */
 
