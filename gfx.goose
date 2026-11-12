@@ -54,6 +54,14 @@ let WINDOW_HIDDEN: i32 = 2;
 let WINDOW_FULLSCREEN: i32 = 4;
 let NO_VSYNC: i32 = 16;
 let DEBUG: i32 = 32;            // validation layers, where installed; on in a debug build of gfx
+// The system reads the gamepads, not SDL's own HID drivers, on Apple's systems
+// and Android: a connected pad then costs an idle program nothing, as the
+// system wakes frame()'s wait when the pad is used, where otherwise the wait
+// reads it every 16 ms. The system's drivers know fewer pads and give less of
+// them (no PlayStation touchpad, motion or light bar). Elsewhere it changes
+// nothing. On Apple's systems gfx sets each pad's GameController
+// valueChangedHandler, replacing one the program set.
+let SYSTEM_GAMEPADS: i32 = 128;
 
 // System cursor shapes.
 let CURSOR_DEFAULT: i32 = 0;

@@ -229,6 +229,9 @@ GS_GFX_API(GS_GFX_PROTO)
     X(i32, WINDOW_FULLSCREEN, 4) \
     X(i32, NO_VSYNC, 16) \
     X(i32, DEBUG, 32) \
+    /* The system reads the gamepads (Apple's systems, Android), which wakes \
+       frame()'s wait when one is used. */ \
+    X(i32, SYSTEM_GAMEPADS, 128) \
     /* System cursor shapes, SDL_SystemCursor. */ \
     X(i32, CURSOR_DEFAULT, 0) \
     X(i32, CURSOR_TEXT, 1) \
