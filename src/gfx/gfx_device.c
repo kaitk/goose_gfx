@@ -13,6 +13,15 @@
 #include <SDL3/SDL_metal.h>
 #endif
 
+/* Windows and Linux, where gfx reads the gamepads itself (gfx_idle_wait). Apple's
+   systems and Android read them outside the program, which can be woken from there
+   (a GameController change handler, Android's input events). */
+#if defined(SDL_PLATFORM_WINDOWS) || (defined(SDL_PLATFORM_LINUX) && !defined(SDL_PLATFORM_ANDROID))
+#define GFX_POLLS_PADS 1
+#else
+#define GFX_POLLS_PADS 0
+#endif
+
 gfx_state gfx;
 
 /* How many times gfx was opened, which close() leaves: handles from an
@@ -469,6 +478,13 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
        no sentinel it blocks until an event; frame() drains its events anyway. */
     SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
 #endif
+#if GFX_POLLS_PADS
+    /* With a gamepad open SDL_WaitEventTimeout() wakes every millisecond to
+       read it, which keeps a laptop's CPU awake. gfx reads the pads itself
+       instead: every frame, and while waiting only as often as a press needs
+       (gfx_idle_wait). */
+    SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
+#endif
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         if (windowed) return gfx_sdl_fail("initializing SDL video");
         /* With no display to open a window on, the offscreen video driver
@@ -697,6 +713,49 @@ static void gfx_idle_wait(int ms) {
     SDL_PumpEvents();
     if (SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST)) return;
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, ms / 1000.0, true);
+}
+#elif GFX_POLLS_PADS
+/* How often the idle wait reads an open gamepad while the window has focus
+   (unfocused, SDL drops a pad's input anyway), and how far one of its axes
+   moves before the wait ends: a resting stick wanders by a few percent and
+   sends an event each time, which mustn't wake the program. */
+#define GFX_GAMEPAD_POLL_MS 16
+#define GFX_GAMEPAD_AXIS_WAKE 8192
+
+static void gfx_idle_wait(int ms) {
+    Sint16 axes[GS_GFX_MAX_GAMEPADS][SDL_GAMEPAD_AXIS_COUNT];
+    bool pads = false;
+    SDL_UpdateJoysticks();
+    for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++) {
+        if (!gfx.gamepads[i].pad) continue;
+        pads = true;
+        for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
+            axes[i][a] = SDL_GetGamepadAxis(gfx.gamepads[i].pad, (SDL_GamepadAxis)a);
+    }
+    Uint64 end = SDL_GetTicks() + (Uint64)ms;
+    for (;;) {
+        /* frame() reads axes as state and joystick events not at all; SDL's
+           gamepad layer saw the joystick ones as they were sent. A peek, not
+           SDL_HasEvents(), which counts the poll sentinel each wait leaves. */
+        SDL_FlushEvents(SDL_EVENT_JOYSTICK_AXIS_MOTION, SDL_EVENT_JOYSTICK_UPDATE_COMPLETE);
+        SDL_FlushEvent(SDL_EVENT_GAMEPAD_AXIS_MOTION);
+        SDL_FlushEvent(SDL_EVENT_GAMEPAD_UPDATE_COMPLETE);
+        SDL_Event e;
+        if (SDL_PeepEvents(&e, 1, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) return;
+        for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++) {
+            if (!gfx.gamepads[i].pad) continue;
+            for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++) {
+                int d = SDL_GetGamepadAxis(gfx.gamepads[i].pad, (SDL_GamepadAxis)a) - axes[i][a];
+                if (d >= GFX_GAMEPAD_AXIS_WAKE || d <= -GFX_GAMEPAD_AXIS_WAKE) return;
+            }
+        }
+        Uint64 now = SDL_GetTicks();
+        if (now >= end) return;
+        Uint64 step = end - now;
+        if (pads && gfx.focused && step > GFX_GAMEPAD_POLL_MS) step = GFX_GAMEPAD_POLL_MS;
+        SDL_WaitEventTimeout(NULL, (Sint32)step);
+        SDL_UpdateJoysticks();
+    }
 }
 #else
 static void gfx_idle_wait(int ms) { SDL_WaitEventTimeout(NULL, ms); }
@@ -961,6 +1020,9 @@ uint8_t gs_gfx_frame(void) {
         gfx.gamepads[i].pressed = gfx.gamepads[i].released = 0;
     gfx.nevents = 0;
     bool resized = false;
+#if GFX_POLLS_PADS
+    SDL_UpdateJoysticks();
+#endif
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
