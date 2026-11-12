@@ -65,6 +65,9 @@ let WINDOW_ONLY: i32 = 64;
 // nothing. On Apple's systems gfx sets each pad's GameController
 // valueChangedHandler, replacing one the program set.
 let SYSTEM_GAMEPADS: i32 = 128;
+// native_kind() on Linux: what native_window() and native_display() are.
+let NATIVE_WAYLAND: i32 = 1;
+let NATIVE_X11: i32 = 2;
 
 // System cursor shapes.
 let CURSOR_DEFAULT: i32 = 0;
@@ -340,8 +343,15 @@ extern fn open_headless(width: i64, height: i64, flags: i64) -> bool = "gs_gfx_o
 fn open_headless(width: i64, height: i64) -> bool { open_headless(width, height, 0) }
 // WINDOW_ONLY: the window's native handle for the renderer that draws into
 // it, as a u64: a CAMetalLayer on Apple's systems, the HWND on Windows, the
-// ANativeWindow on Android; 0 headless.
+// ANativeWindow on Android, on Linux the wl_surface on Wayland or the X11
+// window's number; 0 headless.
 extern fn native_window() -> u64 = "gs_gfx_native_window";
+// WINDOW_ONLY on Linux: the wl_display or X11 Display* that native_window()
+// belongs to; 0 elsewhere and headless.
+extern fn native_display() -> u64 = "gs_gfx_native_display";
+// WINDOW_ONLY on Linux: NATIVE_WAYLAND or NATIVE_X11, whichever SDL opened
+// (Wayland where there is one; SDL_VIDEO_DRIVER chooses); 0 elsewhere.
+extern fn native_kind() -> i64 = "gs_gfx_native_kind";
 // WINDOW_ONLY: whether the renderer showed this frame. A frame that showed
 // nothing makes the next frame() wait for an event, as gfx's own frames do.
 extern fn presented(shown: bool) = "gs_gfx_presented";
