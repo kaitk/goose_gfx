@@ -54,6 +54,9 @@ let WINDOW_HIDDEN: i32 = 2;
 let WINDOW_FULLSCREEN: i32 = 4;
 let NO_VSYNC: i32 = 16;
 let DEBUG: i32 = 32;            // validation layers, where installed; on in a debug build of gfx
+// A window, input, events and time, and no GPU device: another renderer draws
+// into native_window() and tells presented() what it showed each frame.
+let WINDOW_ONLY: i32 = 64;
 
 // System cursor shapes.
 let CURSOR_DEFAULT: i32 = 0;
@@ -127,6 +130,15 @@ let DEPTH24: i32 = 17;
 let DEPTH32F: i32 = 18;
 let DEPTH24_STENCIL8: i32 = 19;
 let DEPTH: i32 = 20;
+// Block-compressed, SAMPLED only and uploaded in whole blocks: BC on desktop
+// GPUs, ASTC on phones, tablets and Apple silicon. format_supported says which.
+let BC1: i32 = 21;
+let BC3: i32 = 22;
+let BC7: i32 = 23;
+let ASTC_4x4: i32 = 24;
+let ASTC_5x5: i32 = 25;
+let ASTC_6x6: i32 = 26;
+let ASTC_8x8: i32 = 27;
 
 // Samplers.
 let NEAREST: i32 = 0;
@@ -318,6 +330,16 @@ fn open(title: const u8[:], width: i64, height: i64) -> bool { open(title, width
 // shows: for tests, and for tools that only compute or render to files.
 extern fn open_headless(width: i64, height: i64, flags: i64) -> bool = "gs_gfx_open_headless";
 fn open_headless(width: i64, height: i64) -> bool { open_headless(width, height, 0) }
+// WINDOW_ONLY: the window's native handle for the renderer that draws into
+// it, as a u64: a CAMetalLayer on Apple's systems, the HWND on Windows, the
+// ANativeWindow on Android; 0 headless.
+extern fn native_window() -> u64 = "gs_gfx_native_window";
+// WINDOW_ONLY: whether the renderer showed this frame. A frame that showed
+// nothing makes the next frame() wait for an event, as gfx's own frames do.
+extern fn presented(shown: bool) = "gs_gfx_presented";
+// WINDOW_ONLY: the window was exposed, shown or resized, so the renderer
+// presents this frame though nothing changed.
+extern fn needs_present() -> bool = "gs_gfx_needs_present";
 extern fn close_raw() = "gs_gfx_close";
 fn close() {
     check();
@@ -671,6 +693,9 @@ fn save_png(t: Texture, path: const u8[:]) -> bool {
 fn screenshot(path: const u8[:]) -> bool { save_png(screen(), path) }
 // Fills mips 1 and up from mip 0. Not inside a pass.
 extern fn generate_mips(t: Texture) = "gs_gfx_generate_mips";
+// Whether this device makes a 2D texture of `format` with `usage`: what a
+// compressed format needs asking before use, and a fallback is chosen by.
+extern fn format_supported(format: i32, usage: i32) -> bool = "gs_gfx_format_supported";
 extern fn texture_info_into(t: Texture, out: TextureDesc&) -> bool = "gs_gfx_texture_info";
 fn texture_info(t: Texture) -> TextureDesc {
     var d = TextureDesc { width: 0, height: 0 };

@@ -119,6 +119,12 @@ typedef struct {
     SDL_Window *window;
     bool video_inited;
     bool gamepad_inited;
+    /* WINDOW_ONLY: open with a window and no device; another renderer draws
+       into the native window (native), and says when it presented. */
+    bool platform_only;
+    void *native;
+    SDL_MetalView metal_view;
+    bool presented;
     SDL_GPUShaderFormat format;         /* what shaders are handed over as */
     int64_t flags;
 
@@ -181,6 +187,15 @@ typedef struct {
     uint64_t start_ns, last_ns;
     double delta;
     int64_t frames;
+    /* Whether anything used the GPU since the last frame(), and how many more frames
+       should try to show the screen in the window though nothing was drawn (it was
+       exposed, restored, or resized, or a drawn frame got no image): frame()
+       presents only then, and waits for an event when neither holds. */
+    bool gpu_work;
+    int expose;
+    /* The GPU device was lost (an SDL call failed with VK_ERROR_DEVICE_LOST):
+       nothing more is presented or submitted, and frame() returns false. */
+    bool lost;
 
     char error[1024];
     int64_t misuse;
@@ -209,6 +224,8 @@ bool gfx_sdl_fail(const char *what);
 
 /* True inside open() .. close(); a misuse to call `what` otherwise. */
 bool gfx_need_device(const char *what);
+/* gfx is open, with a device or WINDOW_ONLY. */
+bool gfx_need_open(const char *what);
 
 /* --- shared helpers ------------------------------------------------------- */
 

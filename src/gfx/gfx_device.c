@@ -6,6 +6,13 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#ifdef SDL_PLATFORM_IOS
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+#ifdef SDL_PLATFORM_APPLE
+#include <SDL3/SDL_metal.h>
+#endif
+
 gfx_state gfx;
 
 /* How many times gfx was opened, which close() leaves: handles from an
@@ -38,11 +45,27 @@ bool gfx_misuse(const char *fmt, ...) {
 }
 
 bool gfx_sdl_fail(const char *what) {
+    /* A lost device fails every later wait and submit at once, so a program
+       drawing each frame would spin, submitting work that never runs (on a Mali
+       driver its per-submit records filled the native heap). It ends instead:
+       frame() returns false from the next call, as if the window were closed. */
+    if (!gfx.lost && SDL_strstr(SDL_GetError(), "DEVICE_LOST")) {
+        gfx.lost = true;
+        gfx.quit = true;
+        fprintf(stderr, "gfx: the GPU device was lost (%s: %s); frame() returns false\n", what,
+                SDL_GetError());
+    }
     return gfx_fail("%s: %s", what, SDL_GetError());
 }
 
 bool gfx_need_device(const char *what) {
     if (gfx.dev) return true;
+    if (gfx.platform_only) return gfx_misuse("%s: gfx is open WINDOW_ONLY, with no device", what);
+    return gfx_misuse("%s: gfx is not open (call gfx::open or gfx::open_headless first)", what);
+}
+
+bool gfx_need_open(const char *what) {
+    if (gfx.dev || gfx.platform_only) return true;
     return gfx_misuse("%s: gfx is not open (call gfx::open or gfx::open_headless first)", what);
 }
 
@@ -148,6 +171,7 @@ static void gfx_init_tables(void) {
 /* --- command buffers ------------------------------------------------------- */
 
 SDL_GPUCommandBuffer *gfx_cmd(void) {
+    gfx.gpu_work = true;
     if (!gfx.cmd) {
         gfx.cmd = SDL_AcquireGPUCommandBuffer(gfx.dev);
         if (!gfx.cmd) gfx_sdl_fail("acquiring a command buffer");
@@ -227,29 +251,24 @@ static bool gfx_screen_texture(gs_gfx_texture *h, SDL_GPUTextureFormat format, u
     return true;
 }
 
-bool gfx_create_screen(int w, int h) {
-    if (w < 1) w = 1;
-    if (h < 1) h = 1;
+/* The screen's depth target, made the first time a program asks for it and
+   remade with the screen after that: a 2D program never asks, so it never
+   pays for a window-sized depth buffer. */
+static bool gfx_has_screen_depth(void) {
+    return gfx.screen_depth.id && gfx_table_find(&gfx.textures, gfx.screen_depth.id);
+}
+
+static bool gfx_create_screen_depth(int w, int h) {
     SDL_GPUTextureFormat depth;
     gfx_texture_format(GS_GFX_DEPTH, &depth);
-    if (!gfx_screen_texture(&gfx.screen, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER,
-                            GS_GFX_RGBA8, w, h) ||
-        !gfx_screen_texture(&gfx.screen_depth, depth, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
+    if (!gfx_screen_texture(&gfx.screen_depth, depth, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
                             GS_GFX_DEPTH, w, h))
         return false;
-    gfx.width = w;
-    gfx.height = h;
-    /* Black and far until the program draws, rather than whatever the
-       memory held. */
+    /* Far until the program draws, rather than whatever the memory held; asked
+       for inside a pass, it waits for the program's own clear. */
+    if (gfx.pass || gfx.cpass) return true;
     SDL_GPUCommandBuffer *cb = gfx_cmd();
     if (!cb) return false;
-    SDL_GPUColorTargetInfo ct;
-    SDL_zero(ct);
-    ct.texture = gfx_texture_slot_of(gfx.screen)->tex;
-    ct.clear_color.a = 1.0f;
-    ct.load_op = SDL_GPU_LOADOP_CLEAR;
-    ct.store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPUDepthStencilTargetInfo dt;
     SDL_zero(dt);
     dt.texture = gfx_texture_slot_of(gfx.screen_depth)->tex;
@@ -258,9 +277,32 @@ bool gfx_create_screen(int w, int h) {
     dt.store_op = SDL_GPU_STOREOP_STORE;
     dt.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
     dt.stencil_store_op = SDL_GPU_STOREOP_STORE;
-    SDL_GPURenderPass *p = SDL_BeginGPURenderPass(cb, &ct, 1, &dt);
+    SDL_GPURenderPass *p = SDL_BeginGPURenderPass(cb, NULL, 0, &dt);
     if (p) SDL_EndGPURenderPass(p);
     return true;
+}
+
+bool gfx_create_screen(int w, int h) {
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (!gfx_screen_texture(&gfx.screen, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                            GS_GFX_RGBA8, w, h))
+        return false;
+    gfx.width = w;
+    gfx.height = h;
+    /* Black until the program draws, rather than whatever the memory held. */
+    SDL_GPUCommandBuffer *cb = gfx_cmd();
+    if (!cb) return false;
+    SDL_GPUColorTargetInfo ct;
+    SDL_zero(ct);
+    ct.texture = gfx_texture_slot_of(gfx.screen)->tex;
+    ct.clear_color.a = 1.0f;
+    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass *p = SDL_BeginGPURenderPass(cb, &ct, 1, NULL);
+    if (p) SDL_EndGPURenderPass(p);
+    return !gfx_has_screen_depth() || gfx_create_screen_depth(w, h);
 }
 
 gs_gfx_texture gs_gfx_screen(void) {
@@ -269,7 +311,8 @@ gs_gfx_texture gs_gfx_screen(void) {
 }
 
 gs_gfx_texture gs_gfx_screen_depth(void) {
-    gfx_need_device("screen_depth");
+    if (gfx_need_device("screen_depth") && gfx.screen.id && !gfx_has_screen_depth())
+        gfx_create_screen_depth(gfx.width, gfx.height);
     return gfx.screen_depth;
 }
 
@@ -342,9 +385,74 @@ static void gfx_seed_mouse(void) {
     gfx.mouse_y = gfx_to_pixels(gy - (float)wy, gfx.window_ph, gfx.window_h);
 }
 
+/* WINDOW_ONLY's open: the window, and its native handle for the renderer that
+   draws into it (a CAMetalLayer on Apple's systems, an HWND on Windows); none
+   headless. The screen size is the window's in pixels. */
+static bool gfx_start_window_only(bool windowed, gs_gfx_bytes title, int64_t width,
+                                  int64_t height, int64_t flags) {
+    gfx.platform_only = true;
+    gfx.width = (int)width;
+    gfx.height = (int)height;
+    gfx.window_w = gfx.window_h = gfx.window_pw = gfx.window_ph = 1;
+    if (windowed) {
+        char buf[512];
+        SDL_WindowFlags wf = SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        if (flags & GS_GFX_WINDOW_RESIZABLE) wf |= SDL_WINDOW_RESIZABLE;
+        if (flags & GS_GFX_WINDOW_HIDDEN) wf |= SDL_WINDOW_HIDDEN;
+        if (flags & GS_GFX_WINDOW_FULLSCREEN) wf |= SDL_WINDOW_FULLSCREEN;
+#ifdef SDL_PLATFORM_APPLE
+        wf |= SDL_WINDOW_METAL;
+#endif
+        gfx.window = SDL_CreateWindow(gfx_cstr(title, buf, sizeof buf), (int)width, (int)height, wf);
+        if (!gfx.window) {
+            gfx_sdl_fail("creating the window");
+            gs_gfx_close();
+            return false;
+        }
+#ifdef SDL_PLATFORM_APPLE
+        gfx.metal_view = SDL_Metal_CreateView(gfx.window);
+        gfx.native = gfx.metal_view ? SDL_Metal_GetLayer(gfx.metal_view) : NULL;
+#elif defined(SDL_PLATFORM_WINDOWS)
+        gfx.native = SDL_GetPointerProperty(SDL_GetWindowProperties(gfx.window),
+                                            SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+#elif defined(SDL_PLATFORM_ANDROID)
+        gfx.native = SDL_GetPointerProperty(SDL_GetWindowProperties(gfx.window),
+                                            SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+#endif
+        if (!gfx.native) {
+            gfx_sdl_fail("getting the window's native handle");
+            gs_gfx_close();
+            return false;
+        }
+        SDL_GetWindowSizeInPixels(gfx.window, &gfx.width, &gfx.height);
+        gfx_update_input_scale();
+        gfx_seed_mouse();
+    }
+    gfx.focused = !gfx.window || (SDL_GetWindowFlags(gfx.window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    gfx.cursor_visible = true;
+    if (gfx.window) SDL_ShowCursor();
+    gfx.start_ns = gfx.last_ns = SDL_GetTicksNS();
+    gfx.inject_event = SDL_RegisterEvents(1);
+    gfx_opens++;
+    return true;
+}
+
+uint64_t gs_gfx_native_window(void) { return (uint64_t)(uintptr_t)gfx.native; }
+
+/* WINDOW_ONLY: whether the renderer showed this frame; one that showed nothing
+   makes the next frame() wait for an event, as gfx's own frames do. */
+void gs_gfx_presented(uint8_t shown) {
+    gfx.presented = shown != 0;
+    if (shown) gfx.expose = 0;
+}
+
+/* WINDOW_ONLY: the window was exposed, shown or resized, so the renderer
+   presents this frame though nothing changed. */
+uint8_t gs_gfx_needs_present(void) { return gfx.expose > 0; }
+
 static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t height,
                       int64_t flags) {
-    if (gfx.dev) return gfx_misuse("gfx is already open: close() it first");
+    if (gfx.dev || gfx.platform_only) return gfx_misuse("gfx is already open: close() it first");
     /* A windowed program run by a test runner draws off screen instead. */
     const char *headless = SDL_getenv("GOOSE_GFX_HEADLESS");
     if (headless && SDL_atoi(headless)) windowed = false;
@@ -355,6 +463,12 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
     gfx_init_tables();
     SDL_SetAssertionHandler(gfx_assert_handler, NULL);
     SDL_SetHint(SDL_HINT_APP_NAME, "Goose");
+#ifdef SDL_PLATFORM_ANDROID
+    /* On Android each pass of SDL_WaitEventTimeout() pushes a new poll sentinel,
+       which wakes the wait at once, so the idle wait in frame() would spin. With
+       no sentinel it blocks until an event; frame() drains its events anyway. */
+    SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+#endif
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         if (windowed) return gfx_sdl_fail("initializing SDL video");
         /* With no display to open a window on, the offscreen video driver
@@ -367,6 +481,7 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
     gfx.video_inited = true;
     /* No gamepad subsystem is no gamepads, not a failure. */
     gfx.gamepad_inited = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    if (flags & GS_GFX_WINDOW_ONLY) return gfx_start_window_only(windowed, title, width, height, flags);
     SDL_GPUShaderFormat formats = SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL;
     if (gfx_have_dxbc()) formats |= SDL_GPU_SHADERFORMAT_DXBC;
 #ifdef NDEBUG
@@ -376,7 +491,19 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
 #endif
     const char *env = SDL_getenv("GOOSE_GFX_DEBUG");
     if (env) debug = SDL_atoi(env) != 0;
-    gfx.dev = SDL_CreateGPUDevice(formats, debug, NULL);
+    /* Goose's shaders never write gl_ClipDistance, and SDL_GPU otherwise requires the
+       Vulkan feature, which Mali GPUs such as the Galaxy Tab A11+'s lack. */
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN,
+                           (formats & SDL_GPU_SHADERFORMAT_SPIRV) != 0);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN,
+                           (formats & SDL_GPU_SHADERFORMAT_MSL) != 0);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXBC_BOOLEAN,
+                           (formats & SDL_GPU_SHADERFORMAT_DXBC) != 0);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debug);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
+    gfx.dev = SDL_CreateGPUDeviceWithProperties(props);
+    SDL_DestroyProperties(props);
     if (!gfx.dev) {
         gfx_fail("no GPU device: %s", SDL_GetError());
         gs_gfx_close();
@@ -468,6 +595,9 @@ void gs_gfx_close(void) {
         SDL_SetWindowRelativeMouseMode(gfx.window, false);
         SDL_ShowCursor();
         SDL_SetCursor(SDL_GetDefaultCursor());
+#ifdef SDL_PLATFORM_APPLE
+        if (gfx.metal_view) SDL_Metal_DestroyView(gfx.metal_view);
+#endif
         SDL_DestroyWindow(gfx.window);
     }
     for (int i = 0; i < SDL_SYSTEM_CURSOR_COUNT; i++)
@@ -527,18 +657,64 @@ void gs_gfx_quit(void) { gfx.quit = true; }
 
 /* --- frames ------------------------------------------------------------------ */
 
+/* The longest frame() waits for an event after a frame that drew nothing, and
+   how many frames it tries to show a screen the window had no image for. */
+#define GFX_IDLE_WAIT_MS 1000
+#define GFX_PRESENT_TRIES 8
+
+#ifdef SDL_PLATFORM_IOS
+/* UIKit's video driver has no WaitEventTimeout, so SDL_WaitEventTimeout() polls:
+   it pumps the run loop for 2 us and sleeps 1 ms, a thousand times a second. The
+   idle wait runs the main run loop itself instead, which sleeps until a source
+   fires (a touch, the system) or the timeout. An event pushed from another thread
+   (an SDL timer's) signals a source of its own, so it ends the wait too; a source
+   stays signalled until handled, so a push just before the wait is not lost. */
+static CFRunLoopRef gfx_main_loop;
+static CFRunLoopSourceRef gfx_wake_source;
+
+static void gfx_wake_perform(void *info) { (void)info; }
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e) {
+    (void)userdata;
+    (void)e;
+    if (!SDL_IsMainThread()) {
+        CFRunLoopSourceSignal(gfx_wake_source);
+        CFRunLoopWakeUp(gfx_main_loop);
+    }
+    return true;
+}
+
+static void gfx_idle_wait(int ms) {
+    if (!gfx_wake_source) {
+        CFRunLoopSourceContext c;
+        SDL_zero(c);
+        c.perform = gfx_wake_perform;
+        gfx_main_loop = CFRunLoopGetCurrent();
+        gfx_wake_source = CFRunLoopSourceCreate(NULL, 0, &c);
+        CFRunLoopAddSource(gfx_main_loop, gfx_wake_source, kCFRunLoopDefaultMode);
+        SDL_AddEventWatch(gfx_wake_watch, NULL);
+    }
+    SDL_PumpEvents();
+    if (SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST)) return;
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, ms / 1000.0, true);
+}
+#else
+static void gfx_idle_wait(int ms) { SDL_WaitEventTimeout(NULL, ms); }
+#endif
+
 /* Shows the screen in the window: a blit into the swapchain texture, which
-   may be missing (a minimized window), in which case nothing is shown. */
-static void gfx_present(void) {
+   may be missing (a minimized window, or a surface being recreated), in which
+   case nothing is shown and it returns false. */
+static bool gfx_present(void) {
     SDL_GPUCommandBuffer *cb = gfx_cmd();
-    if (!cb) return;
+    if (!cb) return false;
     SDL_GPUTexture *swap = NULL;
     Uint32 sw = 0, sh = 0;
     if (!SDL_WaitAndAcquireGPUSwapchainTexture(cb, gfx.window, &swap, &sw, &sh)) {
         gfx_sdl_fail("acquiring the window's image");
-        return;
+        return false;
     }
-    if (!swap) return;
+    if (!swap) return false;
     SDL_GPUBlitInfo bi;
     SDL_zero(bi);
     bi.source.texture = gfx_texture_slot_of(gfx.screen)->tex;
@@ -551,6 +727,7 @@ static void gfx_present(void) {
     bi.filter = sw == (Uint32)gfx.width && sh == (Uint32)gfx.height ? SDL_GPU_FILTER_NEAREST
                                                                      : SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(cb, &bi);
+    return true;
 }
 
 /* A new event at the end of this frame's list. */
@@ -749,14 +926,33 @@ uint8_t gs_gfx_gamepad_rumble(int64_t slot, float low, float high, int64_t ms) {
 }
 
 uint8_t gs_gfx_frame(void) {
-    if (!gfx_need_device("frame")) return 0;
+    if (!gfx_need_open("frame")) return 0;
     if (gfx.pass || gfx.cpass) {
         gfx_misuse("frame() inside a %s pass: end the pass first", gfx.pass ? "render" : "compute");
         return 0;
     }
-    /* The first call starts the first frame; every later one ends one. */
-    if (gfx.window && gfx.frames > 0) gfx_present();
-    gfx_submit();
+    if (gfx.lost) return 0;
+    /* The first call starts the first frame; every later one ends one. A frame that
+       drew nothing shows nothing new, so it isn't presented, and the next one waits
+       for an event (up to GFX_IDLE_WAIT_MS, so a program's timers still run) instead
+       of spinning: an idle program uses no GPU and next to no CPU. */
+    bool drew = gfx.platform_only ? gfx.presented : gfx.gpu_work || gfx.expose > 0;
+    gfx.presented = false;
+    if (gfx.platform_only) {
+        /* The renderer presents; exposed, it is asked to again. */
+    } else if (gfx.window && gfx.frames > 0 && drew) {
+        /* Android recreates the surface on resume, and the first frames after it
+           may get no image: keep trying for a few frames rather than wait. */
+        if (gfx_present()) gfx.expose = 0;
+        else if (gfx.gpu_work) gfx.expose = GFX_PRESENT_TRIES;
+        else gfx.expose--;
+    }
+    if (gfx.dev) gfx_submit();
+    gfx.gpu_work = false;
+    if (gfx.window && gfx.frames > 0 && !drew && gfx.expose <= 0) {
+        gfx_idle_wait(GFX_IDLE_WAIT_MS);
+        gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
+    }
     memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
     memset(gfx.released_keys, 0, sizeof gfx.released_keys);
     gfx.pressed_buttons = gfx.released_buttons = 0;
@@ -838,6 +1034,13 @@ uint8_t gs_gfx_frame(void) {
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 gfx_update_input_scale();
                 resized = true;
+                gfx.expose = GFX_PRESENT_TRIES;
+                break;
+            case SDL_EVENT_WINDOW_EXPOSED:
+            case SDL_EVENT_WINDOW_SHOWN:
+            case SDL_EVENT_WINDOW_RESTORED:
+            case SDL_EVENT_DID_ENTER_FOREGROUND:
+                gfx.expose = GFX_PRESENT_TRIES;
                 break;
             default:
                 if (gfx.inject_event && e.type == gfx.inject_event && e.user.code >= 0 &&
@@ -854,7 +1057,14 @@ uint8_t gs_gfx_frame(void) {
     if (resized && gfx.window) {
         int w = 0, h = 0;
         SDL_GetWindowSizeInPixels(gfx.window, &w, &h);
-        if (w > 0 && h > 0 && (w != gfx.width || h != gfx.height)) gfx_create_screen(w, h);
+        if (w > 0 && h > 0 && (w != gfx.width || h != gfx.height)) {
+            if (gfx.platform_only) {
+                gfx.width = w;
+                gfx.height = h;
+            } else {
+                gfx_create_screen(w, h);
+            }
+        }
     }
     uint64_t now = SDL_GetTicksNS();
     gfx.delta = (double)(now - gfx.last_ns) / 1e9;
@@ -864,7 +1074,7 @@ uint8_t gs_gfx_frame(void) {
 }
 
 double gs_gfx_time(void) {
-    return gfx.dev ? (double)(SDL_GetTicksNS() - gfx.start_ns) / 1e9 : 0.0;
+    return gfx.dev || gfx.platform_only ? (double)(SDL_GetTicksNS() - gfx.start_ns) / 1e9 : 0.0;
 }
 
 double gs_gfx_delta_time(void) { return gfx.delta; }
@@ -964,7 +1174,7 @@ uint8_t gs_gfx_mouse_relative(void) { return gfx.mouse_relative; }
 uint8_t gs_gfx_cursor_visible(void) { return gfx.cursor_visible && !gfx.mouse_relative; }
 
 uint8_t gs_gfx_set_mouse_relative(uint8_t on) {
-    if (!gfx_need_device("set_mouse_relative")) return 0;
+    if (!gfx_need_open("set_mouse_relative")) return 0;
     bool enabled = on != 0;
     if (enabled && !gfx.focused) return gfx_fail("set_mouse_relative: the window is not focused");
     if (gfx.mouse_relative == enabled) return 1;
@@ -999,7 +1209,7 @@ uint8_t gs_gfx_set_cursor(int64_t shape) {
 }
 
 uint8_t gs_gfx_set_cursor_visible(uint8_t visible) {
-    if (!gfx_need_device("set_cursor_visible")) return 0;
+    if (!gfx_need_open("set_cursor_visible")) return 0;
     bool show = visible != 0;
     if (!show && !gfx.focused) return gfx_fail("set_cursor_visible: the window is not focused");
     if (gfx.window && !gfx.mouse_relative) {
@@ -1011,7 +1221,7 @@ uint8_t gs_gfx_set_cursor_visible(uint8_t visible) {
 }
 
 uint8_t gs_gfx_inject_focus(uint8_t focused) {
-    if (!gfx_need_device("inject_focus")) return 0;
+    if (!gfx_need_open("inject_focus")) return 0;
     SDL_Event e;
     SDL_zero(e);
     e.type = focused ? SDL_EVENT_WINDOW_FOCUS_GAINED : SDL_EVENT_WINDOW_FOCUS_LOST;
@@ -1023,7 +1233,7 @@ uint8_t gs_gfx_inject_focus(uint8_t focused) {
 /* Queues an input event as if it came from the keyboard or mouse, seen at
    the next frame(): what tests drive input with. */
 uint8_t gs_gfx_inject_key(gs_gfx_bytes name, uint8_t down) {
-    if (!gfx_need_device("inject_key")) return 0;
+    if (!gfx_need_open("inject_key")) return 0;
     SDL_Scancode sc = gfx_scancode(name);
     if (sc == SDL_SCANCODE_UNKNOWN) return 0;
     SDL_Event e;
@@ -1037,7 +1247,7 @@ uint8_t gs_gfx_inject_key(gs_gfx_bytes name, uint8_t down) {
 }
 
 void gs_gfx_inject_mouse(float x, float y, int64_t button, uint8_t down) {
-    if (!gfx_need_device("inject_mouse")) return;
+    if (!gfx_need_open("inject_mouse")) return;
     SDL_Event e;
     SDL_zero(e);
     e.type = SDL_EVENT_MOUSE_MOTION;
@@ -1070,7 +1280,7 @@ int64_t gs_gfx_events(gs_gfx_event_slice out) {
 }
 
 void gs_gfx_text_input(uint8_t on) {
-    if (!gfx_need_device("text_input") || !gfx.window) return;
+    if (!gfx_need_open("text_input") || !gfx.window) return;
     if (on) SDL_StartTextInput(gfx.window);
     else SDL_StopTextInput(gfx.window);
 }
@@ -1078,7 +1288,7 @@ void gs_gfx_text_input(uint8_t on) {
 /* Text as if typed, seen at the next frame(): a user event in the queue
    keeps its place among injected keys and clicks. */
 uint8_t gs_gfx_inject_text(gs_gfx_bytes text) {
-    if (!gfx_need_device("inject_text")) return 0;
+    if (!gfx_need_open("inject_text")) return 0;
     if (!gfx.inject_event) return gfx_fail("inject_text: SDL has no user event left");
     if (gfx.ninjected == gfx.injected_cap) {
         gfx.injected_cap = gfx.injected_cap ? gfx.injected_cap * 2 : 8;
@@ -1117,7 +1327,7 @@ int64_t gs_gfx_key_name(int64_t scancode, gs_gfx_bytes out) {
 /* Headless, gfx keeps a clipboard of its own, which keeps tests and the
    programs a test runner drives off the system's. */
 int64_t gs_gfx_clipboard(gs_gfx_bytes out) {
-    if (!gfx_need_device("clipboard")) return 0;
+    if (!gfx_need_open("clipboard")) return 0;
     char *text = gfx.window ? SDL_GetClipboardText() : gfx.clipboard;
     int64_t n = text ? (int64_t)strlen(text) : 0;
     int64_t k = n < out.len ? n : out.len;
@@ -1127,7 +1337,7 @@ int64_t gs_gfx_clipboard(gs_gfx_bytes out) {
 }
 
 uint8_t gs_gfx_set_clipboard(gs_gfx_bytes text) {
-    if (!gfx_need_device("set_clipboard")) return 0;
+    if (!gfx_need_open("set_clipboard")) return 0;
     size_t n = text.len > 0 ? (size_t)text.len : 0;
     char *copy = (char *)SDL_malloc(n + 1);
     if (!copy) return gfx_fail("out of memory for the clipboard");
