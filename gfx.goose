@@ -57,6 +57,14 @@ let DEBUG: i32 = 32;            // validation layers, where installed; on in a d
 // A window, input, events and time, and no GPU device: another renderer draws
 // into native_window() and tells presented() what it showed each frame.
 let WINDOW_ONLY: i32 = 64;
+// The system reads the gamepads, not SDL's own HID drivers, on Apple's systems
+// and Android: a connected pad then costs an idle program nothing, as the
+// system wakes frame()'s wait when the pad is used, where otherwise the wait
+// reads it every 16 ms. The system's drivers know fewer pads and give less of
+// them (no PlayStation touchpad, motion or light bar). Elsewhere it changes
+// nothing. On Apple's systems gfx sets each pad's GameController
+// valueChangedHandler, replacing one the program set.
+let SYSTEM_GAMEPADS: i32 = 128;
 
 // System cursor shapes.
 let CURSOR_DEFAULT: i32 = 0;

@@ -236,6 +236,9 @@ GS_GFX_API(GS_GFX_PROTO)
     /* A window, input, events and time, and no GPU device: another renderer \
        draws into native_window() and tells presented() what it showed. */ \
     X(i32, WINDOW_ONLY, 64) \
+    /* The system reads the gamepads (Apple's systems, Android), which wakes \
+       frame()'s wait when one is used. */ \
+    X(i32, SYSTEM_GAMEPADS, 128) \
     /* System cursor shapes, SDL_SystemCursor. */ \
     X(i32, CURSOR_DEFAULT, 0) \
     X(i32, CURSOR_TEXT, 1) \
