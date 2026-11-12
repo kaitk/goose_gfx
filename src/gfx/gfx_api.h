@@ -116,6 +116,8 @@ typedef struct {
     X(uint8_t, gs_gfx_open, (gs_gfx_bytes title, int64_t width, int64_t height, int64_t flags)) \
     X(uint8_t, gs_gfx_open_headless, (int64_t width, int64_t height, int64_t flags)) \
     X(uint64_t, gs_gfx_native_window, (void)) \
+    X(uint64_t, gs_gfx_native_display, (void)) \
+    X(int64_t, gs_gfx_native_kind, (void)) \
     X(void, gs_gfx_presented, (uint8_t shown)) \
     X(uint8_t, gs_gfx_needs_present, (void)) \
     X(void, gs_gfx_close, (void)) \
@@ -219,6 +221,9 @@ GS_GFX_API(GS_GFX_PROTO)
     /* A window, input, events and time, and no GPU device: another renderer \
        draws into native_window() and tells presented() what it showed. */ \
     X(i32, WINDOW_ONLY, 64) \
+    /* native_kind() on Linux: what native_window() and native_display() are. */ \
+    X(i32, NATIVE_WAYLAND, 1) \
+    X(i32, NATIVE_X11, 2) \
     /* Shader stages. */ \
     X(i32, VERTEX, 0) \
     X(i32, FRAGMENT, 1) \
