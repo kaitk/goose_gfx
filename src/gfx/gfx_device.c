@@ -6,6 +6,12 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#ifdef SDL_PLATFORM_IOS
+#include <CoreFoundation/CoreFoundation.h>
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e);
+#endif
+
 gfx_state gfx;
 
 /* How many times gfx was opened, which close() leaves: handles from an
@@ -484,6 +490,9 @@ void gs_gfx_close(void) {
         SDL_DestroyCursor(gfx.cursors[i]);
     for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++)
         if (gfx.gamepads[i].pad) SDL_CloseGamepad(gfx.gamepads[i].pad);
+#ifdef SDL_PLATFORM_IOS
+    if (gfx.wake_watched) SDL_RemoveEventWatch(gfx_wake_watch, NULL);
+#endif
     if (gfx.gamepad_inited) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     if (gfx.video_inited) SDL_QuitSubSystem(SDL_INIT_VIDEO);
 #ifdef SDL_PLATFORM_ANDROID
@@ -544,6 +553,46 @@ void gs_gfx_quit(void) { gfx.quit = true; }
    and for how many frames it retries a present that got no image. */
 #define GFX_IDLE_WAIT_MS 1000
 #define GFX_PRESENT_TRIES 8
+
+#ifdef SDL_PLATFORM_IOS
+/* UIKit has no WaitEventTimeout, so SDL_WaitEventTimeout() polls every 1 ms.
+   The idle wait runs the main run loop instead, which sleeps until a source
+   fires or the timeout. An event pushed from another thread (an SDL timer's)
+   signals a source of gfx's own to end the wait; a source stays signalled
+   until handled, so a push just before the wait isn't lost. */
+static CFRunLoopRef gfx_main_loop;
+static CFRunLoopSourceRef gfx_wake_source;
+
+static void gfx_wake_perform(void *info) { (void)info; }
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e) {
+    (void)userdata;
+    (void)e;
+    if (!SDL_IsMainThread()) {
+        CFRunLoopSourceSignal(gfx_wake_source);
+        CFRunLoopWakeUp(gfx_main_loop);
+    }
+    return true;
+}
+
+static void gfx_idle_wait(int ms) {
+    if (!gfx_wake_source) {
+        CFRunLoopSourceContext c;
+        SDL_zero(c);
+        c.perform = gfx_wake_perform;
+        gfx_main_loop = CFRunLoopGetCurrent();
+        gfx_wake_source = CFRunLoopSourceCreate(NULL, 0, &c);
+        CFRunLoopAddSource(gfx_main_loop, gfx_wake_source, kCFRunLoopDefaultMode);
+    }
+    /* SDL drops its event watches when its events quit, so one per open. */
+    if (!gfx.wake_watched) gfx.wake_watched = SDL_AddEventWatch(gfx_wake_watch, NULL);
+    SDL_PumpEvents();
+    if (SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST)) return;
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, ms / 1000.0, true);
+}
+#else
+static void gfx_idle_wait(int ms) { SDL_WaitEventTimeout(NULL, ms); }
+#endif
 
 /* Shows the screen in the window: a blit into the swapchain texture, which
    may be missing (a minimized window, or a surface being recreated), in which
@@ -790,7 +839,7 @@ uint8_t gs_gfx_frame(void) {
     gfx_submit();
     gfx.gpu_work = false;
     if (gfx.window && gfx.frames > 0 && !drew) {
-        SDL_WaitEventTimeout(NULL, GFX_IDLE_WAIT_MS);
+        gfx_idle_wait(GFX_IDLE_WAIT_MS);
         gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
     }
     memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
