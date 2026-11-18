@@ -186,6 +186,7 @@ typedef struct {
        or a drawn frame got no image); otherwise it waits for an event. */
     bool gpu_work;
     int expose;
+    bool lost;                          /* an SDL call failed with DEVICE_LOST */
 
     char error[1024];
     int64_t misuse;
