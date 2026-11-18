@@ -59,7 +59,8 @@ uint8_t gs_gfx_begin_pass(const gs_gfx_pass_desc *d) {
            screen: the last frame's blit nearly always still reads it, so
            cycling it keeps two or three window-sized copies for good, and the
            GPU orders the clear after that blit without the CPU waiting. */
-        ct[i].cycle = d->clear_color != 0 && d->color[i].id != gfx.screen.id;
+        ct[i].cycle = d->clear_color != 0 && d->color[i].id != gfx.screen.id &&
+                      s->desc.samples < 2;
         if (d->resolve[i].id) {
             gfx_texture_slot *r = gfx_texture_slot_of(d->resolve[i]);
             if (!r) return 0;
@@ -68,7 +69,9 @@ uint8_t gs_gfx_begin_pass(const gs_gfx_pass_desc *d) {
                 return gfx_misuse("begin_pass: resolve target %d must be a single-sample texture "
                                   "of the multisampled target's size and format", i);
             ct[i].resolve_texture = r->tex;
-            ct[i].store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+            /* The samples are only there to be resolved, so a tiler need not
+               write them to memory. */
+            ct[i].store_op = SDL_GPU_STOREOP_RESOLVE;
         }
         t.color[i] = s->format;
         t.ncolor = i + 1;
@@ -91,10 +94,14 @@ uint8_t gs_gfx_begin_pass(const gs_gfx_pass_desc *d) {
         dt.texture = s->tex;
         dt.clear_depth = d->depth_value;
         dt.load_op = d->clear_depth ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-        dt.store_op = SDL_GPU_STOREOP_STORE;
+        /* A multisampled depth can't be sampled or resolved, so nothing reads
+           it after the pass; a single-sampled one may be a shadow map. */
+        SDL_GPUStoreOp depth_store = s->desc.samples > 1 ? SDL_GPU_STOREOP_DONT_CARE
+                                                         : SDL_GPU_STOREOP_STORE;
+        dt.store_op = depth_store;
         dt.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
-        dt.stencil_store_op = SDL_GPU_STOREOP_STORE;
-        dt.cycle = d->clear_depth != 0;
+        dt.stencil_store_op = depth_store;
+        dt.cycle = d->clear_depth != 0 && s->desc.samples < 2;
         t.has_depth = true;
         t.depth = s->format;
     }
