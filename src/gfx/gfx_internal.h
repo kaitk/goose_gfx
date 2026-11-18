@@ -165,8 +165,12 @@ typedef struct {
         SDL_Gamepad *pad;
         SDL_JoystickID id;
         uint32_t buttons, pressed, released;
+        bool wakes;                     /* the system wakes the idle wait for it */
     } gamepads[GS_GFX_MAX_GAMEPADS];
     int64_t gamepad_changes;            /* connects plus disconnects since open */
+    /* In frame()'s idle wait, which a pad's wake_event ends (SYSTEM_GAMEPADS). */
+    bool waiting;
+    uint32_t wake_event;
     /* This frame's events in order, for gs_gfx_events. */
     gs_gfx_event *events;
     int64_t nevents, events_cap;
@@ -187,6 +191,7 @@ typedef struct {
     bool gpu_work;
     int expose;
     bool lost;                          /* an SDL call failed with DEVICE_LOST */
+    bool wake_watched;                  /* iOS: the wait's event watch is added */
 
     char error[1024];
     int64_t misuse;

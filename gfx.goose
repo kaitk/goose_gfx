@@ -57,6 +57,11 @@ let DEBUG: i32 = 32;            // validation layers, where installed; on in a d
 // A frame that drew nothing isn't presented, and the next frame() waits for an
 // event, up to a second: an idle program uses no GPU and next to no CPU.
 let WAIT_WHEN_IDLE: i32 = 256;
+// On Apple's systems and Android the system reads the gamepads, not SDL, and
+// wakes WAIT_WHEN_IDLE's wait when one is used. It knows fewer pads and less
+// of them (no PlayStation touchpad, motion or light bar). On Apple, with
+// WAIT_WHEN_IDLE, gfx replaces each pad's valueChangedHandler with its own.
+let SYSTEM_GAMEPADS: i32 = 128;
 
 // System cursor shapes.
 let CURSOR_DEFAULT: i32 = 0;

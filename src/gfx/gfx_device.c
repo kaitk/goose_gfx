@@ -6,6 +6,16 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#ifdef SDL_PLATFORM_IOS
+#include <CoreFoundation/CoreFoundation.h>
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e);
+#endif
+#ifdef SDL_PLATFORM_APPLE
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
+
 gfx_state gfx;
 
 /* How many times gfx was opened, which close() leaves: handles from an
@@ -390,6 +400,16 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
        all events itself, so it needs no sentinel. */
     if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
 #endif
+    /* With a pad open, SDL_WaitEventTimeout() wakes every 1 ms to read it.
+       WAIT_WHEN_IDLE reads the pads itself instead: each frame, and in the wait
+       every GFX_GAMEPAD_POLL_MS unless the system wakes it. */
+    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
+#if defined(SDL_PLATFORM_APPLE) || defined(SDL_PLATFORM_ANDROID)
+    /* SDL's HID drivers report a pad only when gfx reads it; without them the
+       GameController framework or Android reads it and says when it changes.
+       SDL reads the hint as the gamepad subsystem starts, below. */
+    if (flags & GS_GFX_SYSTEM_GAMEPADS) SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+#endif
     if (windowed) {
         if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) return gfx_sdl_fail("initializing SDL video");
     } else {
@@ -526,10 +546,17 @@ void gs_gfx_close(void) {
         SDL_DestroyCursor(gfx.cursors[i]);
     for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++)
         if (gfx.gamepads[i].pad) SDL_CloseGamepad(gfx.gamepads[i].pad);
+#ifdef SDL_PLATFORM_IOS
+    if (gfx.wake_watched) SDL_RemoveEventWatch(gfx_wake_watch, NULL);
+#endif
     if (gfx.gamepad_inited) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     if (gfx.video_inited) SDL_QuitSubSystem(SDL_INIT_VIDEO);
 #ifdef SDL_PLATFORM_ANDROID
     if (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) SDL_ResetHint(SDL_HINT_POLL_SENTINEL);
+#endif
+    if (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) SDL_ResetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS);
+#if defined(SDL_PLATFORM_APPLE) || defined(SDL_PLATFORM_ANDROID)
+    if (gfx.flags & GS_GFX_SYSTEM_GAMEPADS) SDL_ResetHint(SDL_HINT_JOYSTICK_HIDAPI);
 #endif
     /* What went wrong outlives the device, for gs_gfx_error after a failed
        open. */
@@ -586,6 +613,107 @@ void gs_gfx_quit(void) { gfx.quit = true; }
    and for how many frames it retries a present that got no image. */
 #define GFX_IDLE_WAIT_MS 1000
 #define GFX_PRESENT_TRIES 8
+
+#ifdef SDL_PLATFORM_IOS
+/* UIKit has no WaitEventTimeout, so SDL_WaitEventTimeout() polls every 1 ms.
+   The idle wait runs the main run loop instead, which sleeps until a source
+   fires or the timeout. An event pushed from another thread (an SDL timer's)
+   signals a source of gfx's own to end the wait; a source stays signalled
+   until handled, so a push just before the wait isn't lost. */
+static CFRunLoopRef gfx_main_loop;
+static CFRunLoopSourceRef gfx_wake_source;
+
+static void gfx_wake_perform(void *info) { (void)info; }
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e) {
+    (void)userdata;
+    (void)e;
+    if (!SDL_IsMainThread()) {
+        CFRunLoopSourceSignal(gfx_wake_source);
+        CFRunLoopWakeUp(gfx_main_loop);
+    }
+    return true;
+}
+
+/* Waits up to ms for an event. A source that brings none (a gamepad change
+   handler that didn't wake, gfx_pad_changed) puts the run loop back to sleep. */
+static void gfx_wait_events(int ms) {
+    if (!gfx_wake_source) {
+        CFRunLoopSourceContext c;
+        SDL_zero(c);
+        c.perform = gfx_wake_perform;
+        gfx_main_loop = CFRunLoopGetCurrent();
+        gfx_wake_source = CFRunLoopSourceCreate(NULL, 0, &c);
+        CFRunLoopAddSource(gfx_main_loop, gfx_wake_source, kCFRunLoopDefaultMode);
+    }
+    /* SDL drops its event watches when its events quit, so one per open. */
+    if (!gfx.wake_watched) gfx.wake_watched = SDL_AddEventWatch(gfx_wake_watch, NULL);
+    Uint64 end = SDL_GetTicks() + (Uint64)ms;
+    for (;;) {
+        SDL_PumpEvents();
+        if (SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST)) return;
+        Uint64 now = SDL_GetTicks();
+        if (now >= end) return;
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, (end - now) / 1000.0, true);
+    }
+}
+#else
+static void gfx_wait_events(int ms) { SDL_WaitEventTimeout(NULL, ms); }
+#endif
+
+/* With focus (without it SDL drops pad input), the idle wait reads the pads
+   the system doesn't wake it for this often, and ends when an axis moves this
+   far: a resting stick wanders a few percent, which mustn't wake the program. */
+#define GFX_GAMEPAD_POLL_MS 16
+#define GFX_GAMEPAD_AXIS_WAKE 8192
+
+/* The idle wait for pads gfx reads itself: ends on any event but a small axis
+   move. */
+static void gfx_wait_reading_pads(int ms) {
+    Sint16 axes[GS_GFX_MAX_GAMEPADS][SDL_GAMEPAD_AXIS_COUNT];
+    SDL_UpdateJoysticks();
+    for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++) {
+        if (!gfx.gamepads[i].pad) continue;
+        for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
+            axes[i][a] = SDL_GetGamepadAxis(gfx.gamepads[i].pad, (SDL_GamepadAxis)a);
+    }
+    Uint64 end = SDL_GetTicks() + (Uint64)ms;
+    for (;;) {
+        /* Axis and joystick events don't end it: frame() reads axes as state,
+           and SDL's gamepad layer has seen the joystick events. A peek, as
+           SDL_HasEvents() counts the poll sentinel each wait leaves. */
+        SDL_FlushEvents(SDL_EVENT_JOYSTICK_AXIS_MOTION, SDL_EVENT_JOYSTICK_UPDATE_COMPLETE);
+        SDL_FlushEvent(SDL_EVENT_GAMEPAD_AXIS_MOTION);
+        SDL_FlushEvent(SDL_EVENT_GAMEPAD_UPDATE_COMPLETE);
+        SDL_Event e;
+        if (SDL_PeepEvents(&e, 1, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) return;
+        for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++) {
+            if (!gfx.gamepads[i].pad) continue;
+            for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++) {
+                int d = SDL_GetGamepadAxis(gfx.gamepads[i].pad, (SDL_GamepadAxis)a) - axes[i][a];
+                if (d >= GFX_GAMEPAD_AXIS_WAKE || d <= -GFX_GAMEPAD_AXIS_WAKE) return;
+            }
+        }
+        Uint64 now = SDL_GetTicks();
+        if (now >= end) return;
+        Uint64 step = end - now;
+        if (step > GFX_GAMEPAD_POLL_MS) step = GFX_GAMEPAD_POLL_MS;
+        gfx_wait_events((int)step);
+        SDL_UpdateJoysticks();
+    }
+}
+
+/* frame()'s wait after a frame that drew nothing. It reads the pads itself
+   while one is open that the system doesn't wake it for. */
+static void gfx_idle_wait(int ms) {
+    bool read = false;
+    for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++)
+        if (gfx.gamepads[i].pad && !gfx.gamepads[i].wakes) read = true;
+    gfx.waiting = true;
+    if (read && gfx.focused) gfx_wait_reading_pads(ms);
+    else gfx_wait_events(ms);
+    gfx.waiting = false;
+}
 
 /* Shows the screen in the window: a blit into the swapchain texture, which
    may be missing (a minimized window, or a surface being recreated), in which
@@ -714,6 +842,98 @@ static int gfx_gamepad_slot_of(SDL_JoystickID id) {
     return -1;
 }
 
+#ifdef SDL_PLATFORM_APPLE
+/* Ends the idle wait for a pad the system read (SYSTEM_GAMEPADS), with an
+   event of gfx's own that frame() passes over. */
+static void gfx_pad_wake(void) {
+    if (!gfx.waiting) return;
+    if (!gfx.wake_event) gfx.wake_event = SDL_RegisterEvents(1);
+    if (!gfx.wake_event) return;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = gfx.wake_event;
+    SDL_PushEvent(&e);
+}
+
+/* The GameController framework, through the Objective-C runtime. Each extended
+   gamepad's change handler wakes the idle wait: a button or trigger on any
+   change, a stick or the D-pad only as it crosses GFX_STICK_WAKE out of the
+   middle or back, not as a resting stick stirs. It runs on the main queue, so
+   in the wait or in frame()'s pump, where frame() reads the pad anyway. */
+#define GFX_SEND(type, ...) ((type)objc_msgSend)(__VA_ARGS__)
+#define GFX_STICK_WAKE 0.3f
+
+/* Each stick and D-pad seen (four pads' three) and whether it is off the
+   middle; cleared when a pad goes. */
+static struct { id element; bool out; } gfx_sticks[16];
+
+static void gfx_pad_changed(id element) {
+    SEL sel_kind = sel_registerName("isKindOfClass:");
+    Class dpad = objc_getClass("GCControllerDirectionPad");
+    if (!dpad || !GFX_SEND(BOOL (*)(id, SEL, Class), element, sel_kind, dpad)) {
+        gfx_pad_wake();
+        return;
+    }
+    SEL sel_value = sel_registerName("value");
+    id xaxis = GFX_SEND(id (*)(id, SEL), element, sel_registerName("xAxis"));
+    id yaxis = GFX_SEND(id (*)(id, SEL), element, sel_registerName("yAxis"));
+    float x = GFX_SEND(float (*)(id, SEL), xaxis, sel_value);
+    float y = GFX_SEND(float (*)(id, SEL), yaxis, sel_value);
+    bool out = x >= GFX_STICK_WAKE || x <= -GFX_STICK_WAKE || y >= GFX_STICK_WAKE ||
+               y <= -GFX_STICK_WAKE;
+    int free_slot = -1;
+    for (int i = 0; i < 16; i++) {
+        if (gfx_sticks[i].element == element) {
+            bool moved = gfx_sticks[i].out != out;
+            gfx_sticks[i].out = out;
+            if (moved) gfx_pad_wake();
+            return;
+        }
+        if (!gfx_sticks[i].element && free_slot < 0) free_slot = i;
+    }
+    if (free_slot >= 0) {
+        gfx_sticks[free_slot].element = element;
+        gfx_sticks[free_slot].out = out;
+    }
+    if (out) gfx_pad_wake();
+}
+
+/* Sets every connected controller's change handler; whether any could be. */
+static bool gfx_watch_controllers(void) {
+    Class gc = objc_getClass("GCController");
+    if (!gc) return false;
+    void (^handler)(id, id) = ^(id gamepad, id element) {
+        (void)gamepad;
+        gfx_pad_changed(element);
+    };
+    id all = GFX_SEND(id (*)(id, SEL), (id)gc, sel_registerName("controllers"));
+    unsigned long n = all ? GFX_SEND(unsigned long (*)(id, SEL), all, sel_registerName("count")) : 0;
+    bool set = false;
+    for (unsigned long i = 0; i < n; i++) {
+        id c = GFX_SEND(id (*)(id, SEL, unsigned long), all, sel_registerName("objectAtIndex:"), i);
+        id gamepad = GFX_SEND(id (*)(id, SEL), c, sel_registerName("extendedGamepad"));
+        if (!gamepad) continue;
+        GFX_SEND(void (*)(id, SEL, id), gamepad, sel_registerName("setValueChangedHandler:"),
+                 (id)handler);
+        set = true;
+    }
+    return set;
+}
+#endif
+
+/* Whether the system wakes the idle wait for a pad just opened. */
+static bool gfx_pad_wakes(void) {
+    if (!(gfx.flags & GS_GFX_SYSTEM_GAMEPADS) || !(gfx.flags & GS_GFX_WAIT_WHEN_IDLE)) return false;
+#if defined(SDL_PLATFORM_ANDROID)
+    /* Android's input events reach SDL as they happen, and end the wait. */
+    return true;
+#elif defined(SDL_PLATFORM_APPLE)
+    return gfx_watch_controllers();
+#else
+    return false;
+#endif
+}
+
 static void gfx_gamepad_added(SDL_JoystickID id) {
     if (gfx_gamepad_slot_of(id) >= 0) return;
     for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++) {
@@ -723,6 +943,7 @@ static void gfx_gamepad_added(SDL_JoystickID id) {
         gfx.gamepads[i].pad = pad;
         gfx.gamepads[i].id = id;
         gfx.gamepads[i].buttons = gfx.gamepads[i].pressed = gfx.gamepads[i].released = 0;
+        gfx.gamepads[i].wakes = gfx_pad_wakes();
         gfx.gamepad_changes++;
         return;
     }
@@ -736,7 +957,11 @@ static void gfx_gamepad_removed(SDL_JoystickID id) {
     gfx.gamepads[i].released |= gfx.gamepads[i].buttons;
     gfx.gamepads[i].buttons = 0;
     gfx.gamepads[i].pad = NULL;
+    gfx.gamepads[i].wakes = false;
     gfx.gamepad_changes++;
+#ifdef SDL_PLATFORM_APPLE
+    SDL_zeroa(gfx_sticks);
+#endif
 }
 
 static void gfx_gamepad_button(SDL_JoystickID id, uint8_t button, bool down) {
@@ -833,7 +1058,7 @@ uint8_t gs_gfx_frame(void) {
     gfx_submit();
     gfx.gpu_work = false;
     if (gfx.window && gfx.frames > 0 && !drew) {
-        SDL_WaitEventTimeout(NULL, GFX_IDLE_WAIT_MS);
+        gfx_idle_wait(GFX_IDLE_WAIT_MS);
         gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
     }
     memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
@@ -844,6 +1069,7 @@ uint8_t gs_gfx_frame(void) {
         gfx.gamepads[i].pressed = gfx.gamepads[i].released = 0;
     gfx.nevents = 0;
     bool resized = false;
+    if (on_demand) SDL_UpdateJoysticks();   /* SDL's own updates are off */
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
