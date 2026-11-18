@@ -155,6 +155,9 @@ fields in the same order, and the same constant values.
   Android recreating its surface), the present is retried for up to 8 frames
   before `frame()` waits. On Android the flag turns off SDL's poll sentinel,
   which would end every wait at once.
+  On iOS, where SDL's wait polls every millisecond, gfx runs the main run
+  loop for the timeout instead; an event pushed from another thread, such as
+  an SDL timer's, signals a run loop source of gfx's own to end it.
 * **Everything is in pixels.** A window always asks for the display's full
   pixel density, so on a high-density display its screen has more pixels
   than its size in the display's coordinates, which SDL gives the mouse in:

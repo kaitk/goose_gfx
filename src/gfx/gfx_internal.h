@@ -186,6 +186,7 @@ typedef struct {
        or a drawn frame got no image); otherwise it waits for an event. */
     bool gpu_work;
     int expose;
+    bool wake_watched;                  /* iOS: the wait's event watch is added */
 
     char error[1024];
     int64_t misuse;

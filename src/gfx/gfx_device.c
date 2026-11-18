@@ -6,6 +6,12 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#ifdef SDL_PLATFORM_IOS
+#include <CoreFoundation/CoreFoundation.h>
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e);
+#endif
+
 gfx_state gfx;
 
 /* How many times gfx was opened, which close() leaves: handles from an
@@ -488,6 +494,9 @@ void gs_gfx_close(void) {
         SDL_DestroyCursor(gfx.cursors[i]);
     for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++)
         if (gfx.gamepads[i].pad) SDL_CloseGamepad(gfx.gamepads[i].pad);
+#ifdef SDL_PLATFORM_IOS
+    if (gfx.wake_watched) SDL_RemoveEventWatch(gfx_wake_watch, NULL);
+#endif
     if (gfx.gamepad_inited) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     if (gfx.video_inited) SDL_QuitSubSystem(SDL_INIT_VIDEO);
 #ifdef SDL_PLATFORM_ANDROID
@@ -550,6 +559,47 @@ void gs_gfx_quit(void) { gfx.quit = true; }
 #define GFX_IDLE_WAIT_MS 1000
 #define GFX_PRESENT_TRIES 8
 
+#ifdef SDL_PLATFORM_IOS
+/* UIKit has no WaitEventTimeout, so SDL_WaitEventTimeout() polls every 1 ms.
+   The idle wait runs the main run loop instead, which sleeps until a source
+   fires or the timeout. An event pushed from another thread (an SDL timer's)
+   signals a source of gfx's own to end the wait; a source stays signalled
+   until handled, so a push just before the wait isn't lost. */
+static CFRunLoopRef gfx_main_loop;
+static CFRunLoopSourceRef gfx_wake_source;
+
+static void gfx_wake_perform(void *info) { (void)info; }
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e) {
+    (void)userdata;
+    (void)e;
+    if (!SDL_IsMainThread()) {
+        CFRunLoopSourceSignal(gfx_wake_source);
+        CFRunLoopWakeUp(gfx_main_loop);
+    }
+    return true;
+}
+
+/* Waits up to ms for an event. */
+static void gfx_wait_events(int ms) {
+    if (!gfx_wake_source) {
+        CFRunLoopSourceContext c;
+        SDL_zero(c);
+        c.perform = gfx_wake_perform;
+        gfx_main_loop = CFRunLoopGetCurrent();
+        gfx_wake_source = CFRunLoopSourceCreate(NULL, 0, &c);
+        CFRunLoopAddSource(gfx_main_loop, gfx_wake_source, kCFRunLoopDefaultMode);
+    }
+    /* SDL drops its event watches when its events quit, so one per open. */
+    if (!gfx.wake_watched) gfx.wake_watched = SDL_AddEventWatch(gfx_wake_watch, NULL);
+    SDL_PumpEvents();
+    if (SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST)) return;
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, ms / 1000.0, true);
+}
+#else
+static void gfx_wait_events(int ms) { SDL_WaitEventTimeout(NULL, ms); }
+#endif
+
 /* With focus (without it SDL drops pad input), the idle wait reads the pads
    this often, and ends when an axis moves this far: a resting stick wanders a
    few percent, which mustn't wake the program. */
@@ -586,7 +636,7 @@ static void gfx_wait_reading_pads(int ms) {
         if (now >= end) return;
         Uint64 step = end - now;
         if (step > GFX_GAMEPAD_POLL_MS) step = GFX_GAMEPAD_POLL_MS;
-        SDL_WaitEventTimeout(NULL, (Sint32)step);
+        gfx_wait_events((int)step);
         SDL_UpdateJoysticks();
     }
 }
@@ -598,7 +648,7 @@ static void gfx_idle_wait(int ms) {
     for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++)
         if (gfx.gamepads[i].pad) pads = true;
     if (pads && gfx.focused) gfx_wait_reading_pads(ms);
-    else SDL_WaitEventTimeout(NULL, ms);
+    else gfx_wait_events(ms);
 }
 
 /* Shows the screen in the window: a blit into the swapchain texture, which
