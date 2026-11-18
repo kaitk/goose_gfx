@@ -8,11 +8,15 @@
 
 #ifdef SDL_PLATFORM_IOS
 #include <CoreFoundation/CoreFoundation.h>
+
+static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e);
+#endif
+#ifdef SDL_PLATFORM_APPLE
+#include <objc/message.h>
+#include <objc/runtime.h>
 #endif
 #ifdef SDL_PLATFORM_APPLE
 #include <SDL3/SDL_metal.h>
-#include <objc/message.h>
-#include <objc/runtime.h>
 #endif
 
 gfx_state gfx;
@@ -48,9 +52,8 @@ bool gfx_misuse(const char *fmt, ...) {
 
 bool gfx_sdl_fail(const char *what) {
     /* A lost device fails every later wait and submit at once, so a program
-       drawing each frame would spin, submitting work that never runs (on a Mali
-       driver its per-submit records filled the native heap). It ends instead:
-       frame() returns false from the next call, as if the window were closed. */
+       drawing each frame would spin, submitting work that never runs. frame()
+       returns false from the next call instead, as if the window were closed. */
     if (!gfx.lost && SDL_strstr(SDL_GetError(), "DEVICE_LOST")) {
         gfx.lost = true;
         gfx.quit = true;
@@ -387,10 +390,7 @@ static void gfx_seed_mouse(void) {
     gfx.mouse_y = gfx_to_pixels(gy - (float)wy, gfx.window_ph, gfx.window_h);
 }
 
-/* WINDOW_ONLY's open: the window, and its native handle for the renderer that
-   draws into it (a CAMetalLayer on Apple's systems, an HWND on Windows, on
-   Linux a Wayland surface or an X11 window, with its display); none headless.
-   The screen size is the window's in pixels. */
+/* WINDOW_ONLY's open: the window and its native handle, and no device. */
 static bool gfx_start_window_only(bool windowed, gs_gfx_bytes title, int64_t width,
                                   int64_t height, int64_t flags) {
     gfx.platform_only = true;
@@ -458,15 +458,11 @@ uint64_t gs_gfx_native_display(void) { return (uint64_t)(uintptr_t)gfx.native_di
 
 int64_t gs_gfx_native_kind(void) { return gfx.native_kind; }
 
-/* WINDOW_ONLY: whether the renderer showed this frame; one that showed nothing
-   makes the next frame() wait for an event, as gfx's own frames do. */
 void gs_gfx_presented(uint8_t shown) {
     gfx.presented = shown != 0;
     if (shown) gfx.expose = 0;
 }
 
-/* WINDOW_ONLY: the window was exposed, shown or resized, so the renderer
-   presents this frame though nothing changed. */
 uint8_t gs_gfx_needs_present(void) { return gfx.expose > 0; }
 
 static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t height,
@@ -483,32 +479,34 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
     SDL_SetAssertionHandler(gfx_assert_handler, NULL);
     SDL_SetHint(SDL_HINT_APP_NAME, "Goose");
 #ifdef SDL_PLATFORM_ANDROID
-    /* On Android each pass of SDL_WaitEventTimeout() pushes a new poll sentinel,
-       which wakes the wait at once, so the idle wait in frame() would spin. With
-       no sentinel it blocks until an event; frame() drains its events anyway. */
-    SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+    /* On Android each pass of SDL_WaitEventTimeout() pushes a poll sentinel that
+       ends the wait at once, so WAIT_WHEN_IDLE's wait would spin. frame() drains
+       all events itself, so it needs no sentinel. */
+    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
 #endif
-    /* With a gamepad open SDL_WaitEventTimeout() wakes every millisecond to
-       read it, which keeps a laptop's CPU awake. gfx reads the pads itself
-       instead: every frame, and while waiting only as often as a press needs,
-       or not at all where the system wakes the wait (gfx_idle_wait). */
-    SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
+    /* With a pad open, SDL_WaitEventTimeout() wakes every 1 ms to read it.
+       WAIT_WHEN_IDLE reads the pads itself instead: each frame, and in the wait
+       every GFX_GAMEPAD_POLL_MS unless the system wakes it. */
+    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
 #if defined(SDL_PLATFORM_APPLE) || defined(SDL_PLATFORM_ANDROID)
-    /* SDL's HID drivers read a pad themselves (on the Mac a PlayStation pad's
-       reports stream in hundreds of times a second) and only when gfx asks;
-       without them the GameController framework or Android reads it, and says
-       when it changes. Read when the gamepad subsystem starts, below. */
+    /* SDL's HID drivers report a pad only when gfx reads it; without them the
+       GameController framework or Android reads it and says when it changes.
+       SDL reads the hint as the gamepad subsystem starts, below. */
     if (flags & GS_GFX_SYSTEM_GAMEPADS) SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
-    else SDL_ResetHint(SDL_HINT_JOYSTICK_HIDAPI);
 #endif
-    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
-        if (windowed) return gfx_sdl_fail("initializing SDL video");
-        /* With no display to open a window on, the offscreen video driver
-           still gives SDL_GPU the video device it requires. */
+    if (windowed) {
+        if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) return gfx_sdl_fail("initializing SDL video");
+    } else {
+        /* Headless needs no display: the offscreen video driver gives
+           SDL_GPU the video device it requires without trying the display
+           servers first, which can take a minute and more to fail (WSL's
+           X server, unreachable, does). SDL_VIDEO_DRIVER in the environment
+           still overrides the hint; and if offscreen is not built in, the
+           default drivers are tried. */
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
         bool ok = SDL_InitSubSystem(SDL_INIT_VIDEO);
         SDL_ResetHint(SDL_HINT_VIDEO_DRIVER);
-        if (!ok) return gfx_sdl_fail("initializing SDL video");
+        if (!ok && !SDL_InitSubSystem(SDL_INIT_VIDEO)) return gfx_sdl_fail("initializing SDL video");
     }
     gfx.video_inited = true;
     /* No gamepad subsystem is no gamepads, not a failure. */
@@ -523,8 +521,8 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
 #endif
     const char *env = SDL_getenv("GOOSE_GFX_DEBUG");
     if (env) debug = SDL_atoi(env) != 0;
-    /* Goose's shaders never write gl_ClipDistance, and SDL_GPU otherwise requires the
-       Vulkan feature, which Mali GPUs such as the Galaxy Tab A11+'s lack. */
+    /* gfx's shaders never write gl_ClipDistance, and SDL_GPU otherwise requires
+       the Vulkan feature, which Mali GPUs lack. */
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN,
                            (formats & SDL_GPU_SHADERFORMAT_SPIRV) != 0);
@@ -636,8 +634,18 @@ void gs_gfx_close(void) {
         SDL_DestroyCursor(gfx.cursors[i]);
     for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++)
         if (gfx.gamepads[i].pad) SDL_CloseGamepad(gfx.gamepads[i].pad);
+#ifdef SDL_PLATFORM_IOS
+    if (gfx.wake_watched) SDL_RemoveEventWatch(gfx_wake_watch, NULL);
+#endif
     if (gfx.gamepad_inited) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     if (gfx.video_inited) SDL_QuitSubSystem(SDL_INIT_VIDEO);
+#ifdef SDL_PLATFORM_ANDROID
+    if (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) SDL_ResetHint(SDL_HINT_POLL_SENTINEL);
+#endif
+    if (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) SDL_ResetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS);
+#if defined(SDL_PLATFORM_APPLE) || defined(SDL_PLATFORM_ANDROID)
+    if (gfx.flags & GS_GFX_SYSTEM_GAMEPADS) SDL_ResetHint(SDL_HINT_JOYSTICK_HIDAPI);
+#endif
     /* What went wrong outlives the device, for gs_gfx_error after a failed
        open. */
     char error[sizeof gfx.error];
@@ -689,18 +697,17 @@ void gs_gfx_quit(void) { gfx.quit = true; }
 
 /* --- frames ------------------------------------------------------------------ */
 
-/* The longest frame() waits for an event after a frame that drew nothing, and
-   how many frames it tries to show a screen the window had no image for. */
+/* WAIT_WHEN_IDLE: how long frame() waits after a frame that drew nothing,
+   and for how many frames it retries a present that got no image. */
 #define GFX_IDLE_WAIT_MS 1000
 #define GFX_PRESENT_TRIES 8
 
 #ifdef SDL_PLATFORM_IOS
-/* UIKit's video driver has no WaitEventTimeout, so SDL_WaitEventTimeout() polls:
-   it pumps the run loop for 2 us and sleeps 1 ms, a thousand times a second. The
-   idle wait runs the main run loop itself instead, which sleeps until a source
-   fires (a touch, the system) or the timeout. An event pushed from another thread
-   (an SDL timer's) signals a source of its own, so it ends the wait too; a source
-   stays signalled until handled, so a push just before the wait is not lost. */
+/* UIKit has no WaitEventTimeout, so SDL_WaitEventTimeout() polls every 1 ms.
+   The idle wait runs the main run loop instead, which sleeps until a source
+   fires or the timeout. An event pushed from another thread (an SDL timer's)
+   signals a source of gfx's own to end the wait; a source stays signalled
+   until handled, so a push just before the wait isn't lost. */
 static CFRunLoopRef gfx_main_loop;
 static CFRunLoopSourceRef gfx_wake_source;
 
@@ -716,9 +723,8 @@ static bool SDLCALL gfx_wake_watch(void *userdata, SDL_Event *e) {
     return true;
 }
 
-/* Waits up to ms for an event. A source that brings none (the main queue
-   running a gamepad's change handler that didn't wake, gfx_pad_changed) puts
-   the run loop back to sleep. */
+/* Waits up to ms for an event. A source that brings none (a gamepad change
+   handler that didn't wake, gfx_pad_changed) puts the run loop back to sleep. */
 static void gfx_wait_events(int ms) {
     if (!gfx_wake_source) {
         CFRunLoopSourceContext c;
@@ -727,8 +733,9 @@ static void gfx_wait_events(int ms) {
         gfx_main_loop = CFRunLoopGetCurrent();
         gfx_wake_source = CFRunLoopSourceCreate(NULL, 0, &c);
         CFRunLoopAddSource(gfx_main_loop, gfx_wake_source, kCFRunLoopDefaultMode);
-        SDL_AddEventWatch(gfx_wake_watch, NULL);
     }
+    /* SDL drops its event watches when its events quit, so one per open. */
+    if (!gfx.wake_watched) gfx.wake_watched = SDL_AddEventWatch(gfx_wake_watch, NULL);
     Uint64 end = SDL_GetTicks() + (Uint64)ms;
     for (;;) {
         SDL_PumpEvents();
@@ -742,16 +749,14 @@ static void gfx_wait_events(int ms) {
 static void gfx_wait_events(int ms) { SDL_WaitEventTimeout(NULL, ms); }
 #endif
 
-/* How often the idle wait reads an open gamepad the system doesn't wake it
-   for while the window has focus (unfocused, SDL drops a pad's input anyway),
-   and how far one of its axes moves before the wait ends: a resting stick
-   wanders by a few percent and sends an event each time, which mustn't wake
-   the program. */
+/* With focus (without it SDL drops pad input), the idle wait reads the pads
+   the system doesn't wake it for this often, and ends when an axis moves this
+   far: a resting stick wanders a few percent, which mustn't wake the program. */
 #define GFX_GAMEPAD_POLL_MS 16
 #define GFX_GAMEPAD_AXIS_WAKE 8192
 
-/* The idle wait with a gamepad gfx reads itself: every GFX_GAMEPAD_POLL_MS,
-   ending on any event but a small move of an axis. */
+/* The idle wait for pads gfx reads itself: ends on any event but a small axis
+   move. */
 static void gfx_wait_reading_pads(int ms) {
     Sint16 axes[GS_GFX_MAX_GAMEPADS][SDL_GAMEPAD_AXIS_COUNT];
     SDL_UpdateJoysticks();
@@ -762,9 +767,9 @@ static void gfx_wait_reading_pads(int ms) {
     }
     Uint64 end = SDL_GetTicks() + (Uint64)ms;
     for (;;) {
-        /* frame() reads axes as state and joystick events not at all; SDL's
-           gamepad layer saw the joystick ones as they were sent. A peek, not
-           SDL_HasEvents(), which counts the poll sentinel each wait leaves. */
+        /* Axis and joystick events don't end it: frame() reads axes as state,
+           and SDL's gamepad layer has seen the joystick events. A peek, as
+           SDL_HasEvents() counts the poll sentinel each wait leaves. */
         SDL_FlushEvents(SDL_EVENT_JOYSTICK_AXIS_MOTION, SDL_EVENT_JOYSTICK_UPDATE_COMPLETE);
         SDL_FlushEvent(SDL_EVENT_GAMEPAD_AXIS_MOTION);
         SDL_FlushEvent(SDL_EVENT_GAMEPAD_UPDATE_COMPLETE);
@@ -786,8 +791,8 @@ static void gfx_wait_reading_pads(int ms) {
     }
 }
 
-/* frame()'s wait after a frame that drew nothing: for an event, reading the
-   gamepads meanwhile while one is open that the system doesn't wake it for. */
+/* frame()'s wait after a frame that drew nothing. It reads the pads itself
+   while one is open that the system doesn't wake it for. */
 static void gfx_idle_wait(int ms) {
     bool read = false;
     for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++)
@@ -926,8 +931,8 @@ static int gfx_gamepad_slot_of(SDL_JoystickID id) {
 }
 
 #ifdef SDL_PLATFORM_APPLE
-/* Ends the idle wait for a gamepad the system read (SYSTEM_GAMEPADS), with an
-   event of gfx's own, which frame() passes over. */
+/* Ends the idle wait for a pad the system read (SYSTEM_GAMEPADS), with an
+   event of gfx's own that frame() passes over. */
 static void gfx_pad_wake(void) {
     if (!gfx.waiting) return;
     if (!gfx.wake_event) gfx.wake_event = SDL_RegisterEvents(1);
@@ -938,17 +943,16 @@ static void gfx_pad_wake(void) {
     SDL_PushEvent(&e);
 }
 
-/* The GameController framework through the Objective-C runtime. Each extended
-   gamepad's change handler wakes the idle wait; it runs on the main queue, so
-   inside the wait or frame()'s pump, where it does nothing (frame() reads the
-   pad anyway). A stick or the D-pad wakes the wait when it leaves the middle
-   or comes back to it, by GFX_STICK_WAKE of its way, not as a resting stick
-   stirs around it; a button or trigger at any change. */
+/* The GameController framework, through the Objective-C runtime. Each extended
+   gamepad's change handler wakes the idle wait: a button or trigger on any
+   change, a stick or the D-pad only as it crosses GFX_STICK_WAKE out of the
+   middle or back, not as a resting stick stirs. It runs on the main queue, so
+   in the wait or in frame()'s pump, where frame() reads the pad anyway. */
 #define GFX_SEND(type, ...) ((type)objc_msgSend)(__VA_ARGS__)
 #define GFX_STICK_WAKE 0.3f
 
-/* Each direction pad seen and whether it was off the middle, for at most
-   four pads' two sticks and D-pad; cleared as a pad goes. */
+/* Each stick and D-pad seen (four pads' three) and whether it is off the
+   middle; cleared when a pad goes. */
 static struct { id element; bool out; } gfx_sticks[16];
 
 static void gfx_pad_changed(id element) {
@@ -1007,7 +1011,7 @@ static bool gfx_watch_controllers(void) {
 
 /* Whether the system wakes the idle wait for a pad just opened. */
 static bool gfx_pad_wakes(void) {
-    if (!(gfx.flags & GS_GFX_SYSTEM_GAMEPADS)) return false;
+    if (!(gfx.flags & GS_GFX_SYSTEM_GAMEPADS) || !(gfx.flags & GS_GFX_WAIT_WHEN_IDLE)) return false;
 #if defined(SDL_PLATFORM_ANDROID)
     /* Android's input events reach SDL as they happen, and end the wait. */
     return true;
@@ -1126,20 +1130,24 @@ uint8_t gs_gfx_frame(void) {
         return 0;
     }
     if (gfx.lost) return 0;
-    /* The first call starts the first frame; every later one ends one. A frame that
-       drew nothing shows nothing new, so it isn't presented, and the next one waits
-       for an event (up to GFX_IDLE_WAIT_MS, so a program's timers still run) instead
-       of spinning: an idle program uses no GPU and next to no CPU. */
-    bool drew = gfx.platform_only ? gfx.presented : gfx.gpu_work || gfx.expose > 0;
+    /* The first call starts the first frame; every later one ends one. With
+       WAIT_WHEN_IDLE a frame that drew nothing isn't presented, and the next one
+       waits for an event, up to GFX_IDLE_WAIT_MS so a program's timers still run.
+       WINDOW_ONLY's renderer presents itself and says whether it did. */
+    bool on_demand = (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) != 0;
+    bool work = gfx.gpu_work;           /* before the present's own blit */
+    bool drew = !on_demand || (gfx.platform_only ? gfx.presented : work || gfx.expose > 0);
     gfx.presented = false;
     if (gfx.platform_only) {
-        /* The renderer presents; exposed, it is asked to again. */
+        /* needs_present() stays true a few frames after an expose, as gfx
+           retries its own present. */
+        if (!drew && gfx.expose > 0) gfx.expose--;
     } else if (gfx.window && gfx.frames > 0 && drew) {
-        /* Android recreates the surface on resume, and the first frames after it
-           may get no image: keep trying for a few frames rather than wait. */
+        /* No image: Android recreates the surface on resume, so retry for a few
+           frames before waiting. A minimized window waits after those too. */
         if (gfx_present()) gfx.expose = 0;
-        else if (gfx.gpu_work) gfx.expose = GFX_PRESENT_TRIES;
-        else gfx.expose--;
+        else if (work) gfx.expose = GFX_PRESENT_TRIES;
+        else if (gfx.expose > 0) gfx.expose--;
     }
     if (gfx.dev) gfx_submit();
     gfx.gpu_work = false;
@@ -1155,7 +1163,7 @@ uint8_t gs_gfx_frame(void) {
         gfx.gamepads[i].pressed = gfx.gamepads[i].released = 0;
     gfx.nevents = 0;
     bool resized = false;
-    SDL_UpdateJoysticks();
+    if (on_demand) SDL_UpdateJoysticks();   /* SDL's own updates are off */
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
@@ -1390,7 +1398,7 @@ uint8_t gs_gfx_set_mouse_relative(uint8_t on) {
 }
 
 uint8_t gs_gfx_set_cursor(int64_t shape) {
-    if (!gfx_need_device("set_cursor")) return 0;
+    if (!gfx_need_open("set_cursor")) return 0;
     if (shape < GS_GFX_CURSOR_DEFAULT || shape > GS_GFX_CURSOR_W_RESIZE)
         return gfx_fail("set_cursor: invalid system cursor %lld", (long long)shape);
     if (!gfx.window) return 1;

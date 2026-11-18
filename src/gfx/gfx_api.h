@@ -235,13 +235,10 @@ GS_GFX_API(GS_GFX_PROTO)
     X(i32, WINDOW_FULLSCREEN, 4) \
     X(i32, NO_VSYNC, 16) \
     X(i32, DEBUG, 32) \
-    /* A window, input, events and time, and no GPU device: another renderer \
-       draws into native_window() and tells presented() what it showed. */ \
-    X(i32, WINDOW_ONLY, 64) \
-    /* The system reads the gamepads (Apple's systems, Android), which wakes \
-       frame()'s wait when one is used. */ \
+    X(i32, WAIT_WHEN_IDLE, 256) \
     X(i32, SYSTEM_GAMEPADS, 128) \
-    /* native_kind() on Linux: what native_window() and native_display() are. */ \
+    X(i32, WINDOW_ONLY, 64) \
+    /* native_kind() on Linux. */ \
     X(i32, NATIVE_WAYLAND, 1) \
     X(i32, NATIVE_X11, 2) \
     /* System cursor shapes, SDL_SystemCursor. */ \
@@ -310,8 +307,7 @@ GS_GFX_API(GS_GFX_PROTO)
     X(i32, DEPTH32F, 18) \
     X(i32, DEPTH24_STENCIL8, 19) \
     X(i32, DEPTH, 20) \
-    /* Block-compressed, sampled only and uploaded whole: BC on desktop GPUs, \
-       ASTC on phones, tablets and Apple silicon (format_supported says). */ \
+    /* Block-compressed texture formats. */ \
     X(i32, BC1, 21) \
     X(i32, BC3, 22) \
     X(i32, BC7, 23) \

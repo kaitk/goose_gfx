@@ -193,15 +193,13 @@ typedef struct {
     uint64_t start_ns, last_ns;
     double delta;
     int64_t frames;
-    /* Whether anything used the GPU since the last frame(), and how many more frames
-       should try to show the screen in the window though nothing was drawn (it was
-       exposed, restored, or resized, or a drawn frame got no image): frame()
-       presents only then, and waits for an event when neither holds. */
+    /* WAIT_WHEN_IDLE: frame() presents only after GPU work since the last one,
+       or while expose counts down (the window was exposed, restored or resized,
+       or a drawn frame got no image); otherwise it waits for an event. */
     bool gpu_work;
     int expose;
-    /* The GPU device was lost (an SDL call failed with VK_ERROR_DEVICE_LOST):
-       nothing more is presented or submitted, and frame() returns false. */
-    bool lost;
+    bool lost;                          /* an SDL call failed with DEVICE_LOST */
+    bool wake_watched;                  /* iOS: the wait's event watch is added */
 
     char error[1024];
     int64_t misuse;
@@ -228,9 +226,10 @@ bool gfx_misuse(const char *fmt, ...);
 /* A copy of SDL's reason for the failure of `what`. */
 bool gfx_sdl_fail(const char *what);
 
-/* True inside open() .. close(); a misuse to call `what` otherwise. */
+/* True inside open() .. close() with a device; a misuse to call `what`
+   otherwise. */
 bool gfx_need_device(const char *what);
-/* gfx is open, with a device or WINDOW_ONLY. */
+/* The same, but WINDOW_ONLY passes too. */
 bool gfx_need_open(const char *what);
 
 /* --- shared helpers ------------------------------------------------------- */

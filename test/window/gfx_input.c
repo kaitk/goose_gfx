@@ -16,6 +16,19 @@ static void check(bool ok, const char *what) {
     }
 }
 
+static Uint32 wake_event;
+
+static Uint32 SDLCALL push_wake(void *userdata, SDL_TimerID timer, Uint32 interval) {
+    (void)userdata;
+    (void)timer;
+    (void)interval;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = wake_event;
+    SDL_PushEvent(&e);
+    return 0;
+}
+
 static SDL_Joystick *virtual_pad;
 
 static Uint32 SDLCALL push_stick(void *userdata, SDL_TimerID timer, Uint32 interval) {
@@ -33,10 +46,9 @@ static Uint64 timed_frame(void) {
     return SDL_GetTicks() - t;
 }
 
-/* SDL's virtual gamepad through gfx: presses kept between two reads, and the
-   idle wait (where the system doesn't wake it, as without SYSTEM_GAMEPADS)
-   reading the pad, ending for a stick pushed but not for a resting stick's
-   stir. */
+/* WAIT_WHEN_IDLE with SDL's virtual gamepad: a press let go before frame()
+   counts, and the wait reads the pad, ending for a pushed stick but not for a
+   resting stick's stir. */
 static void gamepad_checks(void) {
     SDL_VirtualJoystickDesc desc;
     SDL_INIT_INTERFACE(&desc);
@@ -90,6 +102,74 @@ static void gamepad_checks(void) {
     check(!gs_gfx_gamepad_connected(slot), "the virtual gamepad leaves its slot");
 }
 
+/* WAIT_WHEN_IDLE: a frame that drew nothing makes the next frame() wait for an
+   event, up to a second, which delta_time() leaves out; one that drew doesn't. */
+static void wait_checks(void) {
+    gs_gfx_bytes title = { (uint8_t *)"Goose wait regression", 21 };
+    check(gs_gfx_open(title, 64, 48, GS_GFX_WINDOW_HIDDEN | GS_GFX_WAIT_WHEN_IDLE),
+          "open WAIT_WHEN_IDLE");
+    gs_gfx_frame();
+    /* Until a frame waits its full second, the window may still be showing. */
+    bool idle = false;
+    for (int i = 0; i < 12 && !idle; i++) idle = timed_frame() >= 900;
+    check(idle, "a frame that drew nothing waits");
+    check(gs_gfx_delta_time() < 0.5, "delta_time() leaves out the wait");
+    gs_gfx_pass_desc pass;
+    SDL_zero(pass);
+    pass.color[0] = gs_gfx_screen();
+    pass.clear_color = 1;
+    check(gs_gfx_begin_pass(&pass), "clear the screen");
+    gs_gfx_end_pass();
+    check(timed_frame() < 500, "a frame that drew doesn't wait");
+    idle = false;
+    for (int i = 0; i < 12 && !idle; i++) idle = timed_frame() >= 900;
+    check(idle, "the frame after it waits again");
+    wake_event = SDL_RegisterEvents(1);
+    SDL_AddTimer(200, push_wake, NULL);
+    Uint64 woken = timed_frame();
+    check(woken >= 150 && woken < 600, "an event ends the wait");
+    printf("wait: an event at 200 ms ended it at %llu ms\n", (unsigned long long)woken);
+    /* The wait reads a pad only while the window has focus. */
+    gs_gfx_inject_focus(true);
+    gs_gfx_frame();
+    gamepad_checks();
+    gs_gfx_close();
+}
+
+/* WINDOW_ONLY: a window and no device, its native handle for another renderer,
+   and with WAIT_WHEN_IDLE the wait following what the renderer says it showed. */
+static void window_only_checks(void) {
+    gs_gfx_bytes title = { (uint8_t *)"Goose window only", 17 };
+    check(gs_gfx_open(title, 64, 48, GS_GFX_WINDOW_HIDDEN | GS_GFX_WINDOW_ONLY | GS_GFX_WAIT_WHEN_IDLE),
+          "open WINDOW_ONLY");
+    check(gs_gfx_native_window() != 0, "WINDOW_ONLY gives the native window");
+    int n = 0;
+    SDL_Window **windows = SDL_GetWindows(&n);
+    SDL_Window *window = n == 1 ? windows[0] : NULL;
+    SDL_free(windows);
+    check(window != NULL, "WINDOW_ONLY opens one window");
+    int pw = 0, ph = 0;
+    if (window) SDL_GetWindowSizeInPixels(window, &pw, &ph);
+    gs_gfx_int2 screen;
+    gs_gfx_screen_size(&screen);
+    check(screen.x == pw && screen.y == ph, "the screen size is the window's in pixels");
+    check(gs_gfx_set_cursor(GS_GFX_CURSOR_POINTER), "WINDOW_ONLY sets the cursor");
+    gs_gfx_frame();
+    bool idle = false;
+    for (int i = 0; i < 12 && !idle; i++) idle = timed_frame() >= 900;
+    check(idle, "a frame the renderer showed nothing in waits");
+    check(!gs_gfx_needs_present(), "nothing to present after the wait");
+    gs_gfx_presented(1);
+    check(timed_frame() < 500, "a frame the renderer showed doesn't wait");
+    gs_gfx_bytes key = { (uint8_t *)"A", 1 };
+    gs_gfx_inject_focus(true);
+    gs_gfx_inject_key(key, true);
+    gs_gfx_frame();
+    check(gs_gfx_focused() && gs_gfx_key_pressed(key), "input reaches WINDOW_ONLY");
+    gs_gfx_close();
+    check(gs_gfx_native_window() == 0, "no native window after close");
+}
+
 int main(void) {
     /* Keep SDL alive after gfx closes, so cursor cleanup can be inspected. */
     if (!SDL_Init(SDL_INIT_VIDEO)) return 1;
@@ -121,6 +201,9 @@ int main(void) {
     SDL_WindowID id = SDL_GetWindowID(window);
     gs_gfx_frame();
     check(!gs_gfx_focused(), "a hidden window starts without focus");
+    bool waited = false;
+    for (int i = 0; i < 4; i++) waited = waited || timed_frame() >= 500;
+    check(!waited, "without WAIT_WHEN_IDLE frame() doesn't wait");
 
     int window_w = 0, window_h = 0;
     SDL_GetWindowSize(window, &window_w, &window_h);
@@ -200,14 +283,14 @@ int main(void) {
     gs_gfx_frame();
     check(!SDL_GetWindowRelativeMouseMode(window), "focus gain does not recapture");
     check(gs_gfx_set_mouse_relative(true), "explicitly recapture");
-    check(gs_gfx_set_mouse_relative(false), "release for the gamepad checks");
-    gamepad_checks();
     gs_gfx_close();
     check(SDL_CursorVisible(), "close restores cursor visibility");
     check(SDL_GetCursor() == SDL_GetDefaultCursor(), "close restores the default cursor");
 
     check(gs_gfx_pixel_density() == 1 && gs_gfx_display_scale() == 1,
           "scales are 1 after close");
+    wait_checks();
+    window_only_checks();
     check(gs_gfx_open_headless(16, 16, 0), "reopen headless after releasing cursors");
     check(gs_gfx_pixel_density() == 1 && gs_gfx_display_scale() == 1,
           "scales are 1 headless");

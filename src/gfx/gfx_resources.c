@@ -49,8 +49,7 @@ bool gfx_texture_format(int32_t format, SDL_GPUTextureFormat *out) {
     }
 }
 
-/* A block-compressed format: sampled, never drawn into, uploaded in whole
-   blocks. */
+/* BC and ASTC: sampled only, uploaded in whole blocks. */
 static bool gfx_is_compressed(int32_t format) {
     return format >= GS_GFX_BC1 && format <= GS_GFX_ASTC_8x8;
 }
@@ -466,9 +465,8 @@ static bool gfx_upload_texture(const SDL_GPUTextureRegion *reg, const void *data
     SDL_zero(src);
     src.transfer_buffer = tb;
     src.offset = at;
-    /* Tightly packed, which 0 says in whole blocks: a compressed region's
-       width need not be a multiple of the block (2048 in 6x6 blocks), and
-       Vulkan's row length must be. */
+    /* 0: tightly packed, in whole blocks. Vulkan's row length must be whole
+       blocks, which a compressed region's width need not be (2048 in 6x6). */
     src.pixels_per_row = 0;
     src.rows_per_layer = 0;
     SDL_UploadToGPUTexture(cp, &src, reg, false);
@@ -654,8 +652,7 @@ uint8_t gs_gfx_texture_info(gs_gfx_texture t, gs_gfx_texture_desc *out) {
 }
 
 /* Whether `format` is one of gfx's and this device can make a 2D texture of
-   it with `usage`: what a compressed format needs checking before use, and
-   a fallback chosen by. */
+   it with `usage`. */
 uint8_t gs_gfx_format_supported(int32_t format, int32_t usage) {
     if (!gfx_need_device("format_supported")) return 0;
     SDL_GPUTextureFormat f;

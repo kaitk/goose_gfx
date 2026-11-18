@@ -137,12 +137,56 @@ fields in the same order, and the same constant values.
   dialog. Draws and dispatches check that every sampler, storage resource,
   uniform block and vertex buffer the bound pipeline's shaders read was
   provided, and a pushed uniform block must have the shader's std140 size.
-* **The screen** is an RGBA8 texture with a depth texture, not the swapchain:
+* **The screen** is an RGBA8 texture, not the swapchain:
   a frame draws into it, and `frame()` blits it to the window. Pipelines then
   never depend on the swapchain's format, screenshots and readback of the
   screen are ordinary texture downloads, and a minimized window (no swapchain
   image) only skips the blit. A headless device (`open_headless`, or `open`
   under `GOOSE_GFX_HEADLESS=1`) has the same screen and no window.
+  Its depth texture is made on the first `screen_depth()` and remade with the
+  screen after that, so a 2D program has none. Clearing the screen doesn't
+  cycle it: the last frame's blit nearly always still reads it, so cycling
+  would keep two or three window-sized copies.
+* **Multisampled targets aren't kept.** A pass resolves a multisampled color
+  target without storing its samples, and doesn't store a multisampled depth
+  target, so a tiling GPU never writes them to memory. After the pass their
+  contents are undefined: a later pass clears them rather than loads them.
+  Neither is cycled on clear. A single-sampled depth target is stored, as it
+  may be a shadow map.
+* **Drawing on demand** is the `WAIT_WHEN_IDLE` open flag. Without it every
+  `frame()` presents, so a program that draws nothing still redraws the
+  window at the display's rate. With it, `frame()` presents only when
+  something used the GPU since the last one (a pass, a copy, an upload) or
+  the window needs its image again (exposed, shown, restored, resized, back
+  in the foreground). After a frame that presented nothing, the next
+  `frame()` waits for an event, up to a second so a program's timers still
+  run, and `delta_time()` leaves the wait out. A program that animates draws
+  every frame and never waits. When the window gives no image (minimized, or
+  Android recreating its surface), the present is retried for up to 8 frames
+  before `frame()` waits. On Android the flag turns off SDL's poll sentinel,
+  which would end every wait at once.
+  On iOS, where SDL's wait polls every millisecond, gfx runs the main run
+  loop for the timeout instead; an event pushed from another thread, such as
+  an SDL timer's, signals a run loop source of gfx's own to end it.
+* **A lost device ends the program's loop.** Once Vulkan reports
+  `VK_ERROR_DEVICE_LOST`, every later wait and submit fails at once, so a
+  program drawing each frame would spin. gfx prints the first such failure,
+  and `frame()` returns false from then on, as if the window were closed.
+  Direct3D 12's device removal and Metal's loss aren't recognized yet, as
+  SDL reports them in other words.
+* **A window for another renderer** is the `WINDOW_ONLY` open flag: gfx opens
+  the window and keeps its input, events, cursor, clipboard, time and
+  `WAIT_WHEN_IDLE`'s wait, but makes no GPU device, and a call that needs one
+  is a misuse. `native_window()` is the handle the renderer draws into: a
+  `CAMetalLayer` on Apple's systems, the `HWND` on Windows, the
+  `ANativeWindow` on Android; on Linux the `wl_surface` or X11 window, with
+  `native_display()` its `wl_display` or `Display*` and `native_kind()`
+  `NATIVE_WAYLAND` or `NATIVE_X11`; 0 headless. `screen_size()` follows the
+  window's size in pixels. With `WAIT_WHEN_IDLE` the renderer reports each
+  frame with `presented(shown)`, and a frame that showed nothing makes the
+  next `frame()` wait; `needs_present()` is true for a few frames after the
+  window is exposed, shown, restored or resized. A program can use the flag
+  to choose its renderer at run time.
 * **Everything is in pixels.** A window always asks for the display's full
   pixel density, so on a high-density display its screen has more pixels
   than its size in the display's coordinates, which SDL gives the mouse in:
@@ -170,6 +214,26 @@ fields in the same order, and the same constant values.
   `error()`. It leaves visibility and relative mode unchanged. Headless calls
   validate the shape without touching the desktop cursor. `close()` restores
   the default cursor and releases cached shapes.
+* **Gamepads** take the slots `0` to `MAX_GAMEPADS - 1` in the order they
+  connect. SDL's gamepad subsystem is opened with video, and a machine without
+  one has no gamepads rather than a failed `open`. Buttons are kept from SDL's
+  events as held state plus the latest `frame()`'s edges, as keys are, and a
+  pad that disconnects releases what it held. Axes and rumble go straight to
+  SDL, with no deadzone.
+  SDL reads an open pad every millisecond, which would keep
+  `WAIT_WHEN_IDLE`'s wait awake, so with that flag gfx reads the pads itself:
+  at each `frame()`, and in the wait every 16 ms while the window has focus.
+  The wait ends on a button or an axis moved a quarter of its way, not as a
+  resting stick wanders.
+  The `SYSTEM_GAMEPADS` open flag lets the system read the pads on Apple's
+  systems and Android instead of SDL's HID drivers, and wake the wait itself;
+  on Apple's systems gfx sets each pad's GameController change handler,
+  replacing the program's. The system's drivers know fewer pads and less of
+  them (no PlayStation touchpad, motion or light bar). Elsewhere the flag does
+  nothing.
+* **Fullscreen** is borderless, at the desktop's resolution, and SDL changes it
+  asynchronously: `fullscreen()` can lag a frame or two behind
+  `set_fullscreen`, and the screen follows the window as with any resize.
 * **Pipelines are created for their render targets.** A pipeline description
   does not name its targets. The layer creates a pipeline on first use with
   each combination of color formats, depth format, and sample count.
@@ -182,6 +246,21 @@ fields in the same order, and the same constant values.
   is recorded in the frame's command buffer, and so happens between passes. A
   rewrite of a whole buffer lets SDL cycle it rather than wait for a draw still
   using it. Readback submits and waits.
+* **Small uploads share one buffer.** Creating and releasing a transfer buffer
+  costs a tenth of a millisecond or more each time on Direct3D 12, so uploads
+  up to 4 MB are packed one after another into a 4 MB buffer kept for the
+  device's life. Each takes the next free region, mapped without cycling, since
+  nothing pending reads a region not yet handed out. When the next doesn't fit,
+  the buffer is mapped with cycling and filling starts again at 0. Texture
+  uploads start on a 512-byte boundary, Direct3D 12's placement alignment
+  (otherwise SDL copies the data again), and buffer uploads on a 16-byte one.
+  Larger uploads get a buffer of their own.
+* **Compressed textures** (`BC1`, `BC3`, `BC7`, `ASTC_4x4` to `ASTC_8x8`) are
+  sampled only and uploaded in whole blocks, tightly packed: Vulkan's row
+  length must be a whole number of blocks, which a region's width need not
+  be. They can't be read back or given `generate_mips`. `format_supported`
+  asks the device whether it samples a format: BC is a desktop GPU's, ASTC a
+  mobile or Apple GPU's.
 * **Shaders**: the device takes SPIR-V where it can, else DXBC, else MSL. DXBC
   is the blob's HLSL compiled at load time by `d3dcompiler_47.dll`, which ships
   with Windows 10 and 11, loaded by name. Each SDL shader is made once per blob.
@@ -208,7 +287,13 @@ focus loss and reacquisition, release edges/events, ignored background input,
 and headless close/reopen. `python test/window/run_input_test.py --exe
 <goose>` complements it on a machine with a display and GPU: a hidden real
 window verifies the SDL mode/visibility setters, unrelated-window focus
-filtering, double-click cleanup, and cursor restoration after close. Physical
+filtering, double-click cleanup, cursor restoration after close, and that
+`WAIT_WHEN_IDLE`'s `frame()` waits after a frame that drew nothing and not
+after one that drew, and that an event ends the wait; with SDL's virtual
+gamepad, that a press let go before `frame()` still counts, and that a press
+or a pushed stick ends the wait and a resting stick's stir doesn't; and that
+`WINDOW_ONLY` gives a native window, the window's size, input, and the wait.
+Physical
 mouse confinement and Alt-Tab still need an interactive check on each platform.
 
 * **`test/gfx/`** in the regular suite: headless programs that render into
@@ -249,14 +334,16 @@ mouse confinement and Alt-Tab still need an interactive check on each platform.
 | Showcase | JIT, cl, clang-cl, clang; Direct3D 12 and Vulkan | JIT, gcc, clang; Vulkan | not run |
 
 On Windows the showcase's screenshots from Direct3D 12 and Vulkan differ by
-0.65 of 255 per channel on average. On Linux with no display at all (the CI
-runner's case, simulated by unsetting `DISPLAY` and `WAYLAND_DISPLAY`), SDL's
-video initialization fails and `open_headless` falls back to SDL's offscreen
-video driver, which gives the Vulkan backend what it needs: the `test/gfx/`
-programs run there unchanged. Nothing on macOS has run: the MSL that
-cute_spirv emits, SDL's Metal backend under this layer, the framework list
-in `link-cc.rsp`, and TinyCC's arm64 calls into the layer are all unverified
-until CI or a Mac runs them.
+0.65 of 255 per channel on average. `open_headless` (and a program run with
+`GOOSE_GFX_HEADLESS=1`) initializes SDL's video with its offscreen driver,
+which gives the Vulkan backend what it needs without a display: the
+`test/gfx/` programs run unchanged on Linux with no display at all (the CI
+runner's case). It does not try the display servers first: in WSL, with
+`DISPLAY` set and WSLg's X server not answering, SDL's X11 driver took 86
+seconds to fail before the fallback, on every program. Nothing on macOS has
+run: the MSL that cute_spirv emits, SDL's Metal backend under this layer,
+the framework list in `link-cc.rsp`, and TinyCC's arm64 calls into the layer
+are all unverified until CI or a Mac runs them.
 
 ## Decisions on the plan's open questions
 
@@ -277,7 +364,7 @@ until CI or a Mac runs them.
   function's slice parameter produces invalid C at `-O1`/`-O2` (bind it to a
   local first); and a struct field's default cannot name a global constant
   (the gfx descriptions spell their defaults as numbers).
-* **API**: gamepads and audio (SDL has them all), indirect draws,
+* **API**: indirect draws,
   stencil, blend constants, debug labels, a `Region` for readback of depth
   textures (SDL_GPU cannot download one directly), checking uniform block
   member offsets rather than size alone, and readback forms that return a

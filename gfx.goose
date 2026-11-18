@@ -54,17 +54,17 @@ let WINDOW_HIDDEN: i32 = 2;
 let WINDOW_FULLSCREEN: i32 = 4;
 let NO_VSYNC: i32 = 16;
 let DEBUG: i32 = 32;            // validation layers, where installed; on in a debug build of gfx
+// A frame that drew nothing isn't presented, and the next frame() waits for an
+// event, up to a second: an idle program uses no GPU and next to no CPU.
+let WAIT_WHEN_IDLE: i32 = 256;
+// On Apple's systems and Android the system reads the gamepads, not SDL, and
+// wakes WAIT_WHEN_IDLE's wait when one is used. It knows fewer pads and less
+// of them (no PlayStation touchpad, motion or light bar). On Apple, with
+// WAIT_WHEN_IDLE, gfx replaces each pad's valueChangedHandler with its own.
+let SYSTEM_GAMEPADS: i32 = 128;
 // A window, input, events and time, and no GPU device: another renderer draws
 // into native_window() and tells presented() what it showed each frame.
 let WINDOW_ONLY: i32 = 64;
-// The system reads the gamepads, not SDL's own HID drivers, on Apple's systems
-// and Android: a connected pad then costs an idle program nothing, as the
-// system wakes frame()'s wait when the pad is used, where otherwise the wait
-// reads it every 16 ms. The system's drivers know fewer pads and give less of
-// them (no PlayStation touchpad, motion or light bar). Elsewhere it changes
-// nothing. On Apple's systems gfx sets each pad's GameController
-// valueChangedHandler, replacing one the program set.
-let SYSTEM_GAMEPADS: i32 = 128;
 // native_kind() on Linux: what native_window() and native_display() are.
 let NATIVE_WAYLAND: i32 = 1;
 let NATIVE_X11: i32 = 2;
@@ -141,8 +141,8 @@ let DEPTH24: i32 = 17;
 let DEPTH32F: i32 = 18;
 let DEPTH24_STENCIL8: i32 = 19;
 let DEPTH: i32 = 20;
-// Block-compressed, SAMPLED only and uploaded in whole blocks: BC on desktop
-// GPUs, ASTC on phones, tablets and Apple silicon. format_supported says which.
+// Block-compressed, SAMPLED only, uploaded in whole blocks: BC on desktop GPUs,
+// ASTC on mobile and Apple GPUs. Ask format_supported before using one.
 let BC1: i32 = 21;
 let BC3: i32 = 22;
 let BC7: i32 = 23;
@@ -711,8 +711,8 @@ fn save_png(t: Texture, path: const u8[:]) -> bool {
 fn screenshot(path: const u8[:]) -> bool { save_png(screen(), path) }
 // Fills mips 1 and up from mip 0. Not inside a pass.
 extern fn generate_mips(t: Texture) = "gs_gfx_generate_mips";
-// Whether this device makes a 2D texture of `format` with `usage`: what a
-// compressed format needs asking before use, and a fallback is chosen by.
+// Whether this device can make a 2D texture of `format` with `usage`. Ask
+// before using a compressed format, and fall back to another if not.
 extern fn format_supported(format: i32, usage: i32) -> bool = "gs_gfx_format_supported";
 extern fn texture_info_into(t: Texture, out: TextureDesc&) -> bool = "gs_gfx_texture_info";
 fn texture_info(t: Texture) -> TextureDesc {
