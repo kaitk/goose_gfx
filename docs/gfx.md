@@ -137,12 +137,16 @@ fields in the same order, and the same constant values.
   dialog. Draws and dispatches check that every sampler, storage resource,
   uniform block and vertex buffer the bound pipeline's shaders read was
   provided, and a pushed uniform block must have the shader's std140 size.
-* **The screen** is an RGBA8 texture with a depth texture, not the swapchain:
+* **The screen** is an RGBA8 texture, not the swapchain:
   a frame draws into it, and `frame()` blits it to the window. Pipelines then
   never depend on the swapchain's format, screenshots and readback of the
   screen are ordinary texture downloads, and a minimized window (no swapchain
   image) only skips the blit. A headless device (`open_headless`, or `open`
   under `GOOSE_GFX_HEADLESS=1`) has the same screen and no window.
+  Its depth texture is made on the first `screen_depth()` and remade with the
+  screen after that, so a 2D program has none. Clearing the screen doesn't
+  cycle it: the last frame's blit nearly always still reads it, so cycling
+  would keep two or three window-sized copies.
 * **Everything is in pixels.** A window always asks for the display's full
   pixel density, so on a high-density display its screen has more pixels
   than its size in the display's coordinates, which SDL gives the mouse in:
