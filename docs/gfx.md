@@ -196,6 +196,12 @@ fields in the same order, and the same constant values.
   at each `frame()`, and in the wait every 16 ms while the window has focus.
   The wait ends on a button or an axis moved a quarter of its way, not as a
   resting stick wanders.
+  The `SYSTEM_GAMEPADS` open flag lets the system read the pads on Apple's
+  systems and Android instead of SDL's HID drivers, and wake the wait itself;
+  on Apple's systems gfx sets each pad's GameController change handler,
+  replacing the program's. The system's drivers know fewer pads and less of
+  them (no PlayStation touchpad, motion or light bar). Elsewhere the flag does
+  nothing.
 * **Fullscreen** is borderless, at the desktop's resolution, and SDL changes it
   asynchronously: `fullscreen()` can lag a frame or two behind
   `set_fullscreen`, and the screen follows the window as with any resize.
