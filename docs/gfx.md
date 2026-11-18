@@ -188,6 +188,11 @@ fields in the same order, and the same constant values.
   events as held state plus the latest `frame()`'s edges, as keys are, and a
   pad that disconnects releases what it held. Axes and rumble go straight to
   SDL, with no deadzone.
+  SDL reads an open pad every millisecond, which would keep
+  `WAIT_WHEN_IDLE`'s wait awake, so with that flag gfx reads the pads itself:
+  at each `frame()`, and in the wait every 16 ms while the window has focus.
+  The wait ends on a button or an axis moved a quarter of its way, not as a
+  resting stick wanders.
 * **Fullscreen** is borderless, at the desktop's resolution, and SDL changes it
   asynchronously: `fullscreen()` can lag a frame or two behind
   `set_fullscreen`, and the screen follows the window as with any resize.
@@ -240,7 +245,9 @@ and headless close/reopen. `python test/window/run_input_test.py --exe
 window verifies the SDL mode/visibility setters, unrelated-window focus
 filtering, double-click cleanup, cursor restoration after close, and that
 `WAIT_WHEN_IDLE`'s `frame()` waits after a frame that drew nothing and not
-after one that drew, and that an event ends the wait. Physical
+after one that drew, and that an event ends the wait; with SDL's virtual
+gamepad, that a press let go before `frame()` still counts, and that a press
+or a pushed stick ends the wait and a resting stick's stir doesn't. Physical
 mouse confinement and Alt-Tab still need an interactive check on each platform.
 
 * **`test/gfx/`** in the regular suite: headless programs that render into
