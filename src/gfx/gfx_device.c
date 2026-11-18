@@ -38,6 +38,15 @@ bool gfx_misuse(const char *fmt, ...) {
 }
 
 bool gfx_sdl_fail(const char *what) {
+    /* A lost device fails every later wait and submit at once, so a program
+       drawing each frame would spin, submitting work that never runs. frame()
+       returns false from the next call instead, as if the window were closed. */
+    if (!gfx.lost && SDL_strstr(SDL_GetError(), "DEVICE_LOST")) {
+        gfx.lost = true;
+        gfx.quit = true;
+        fprintf(stderr, "gfx: the GPU device was lost (%s: %s); frame() returns false\n", what,
+                SDL_GetError());
+    }
     return gfx_fail("%s: %s", what, SDL_GetError());
 }
 
@@ -148,6 +157,7 @@ static void gfx_init_tables(void) {
 /* --- command buffers ------------------------------------------------------- */
 
 SDL_GPUCommandBuffer *gfx_cmd(void) {
+    gfx.gpu_work = true;
     if (!gfx.cmd) {
         gfx.cmd = SDL_AcquireGPUCommandBuffer(gfx.dev);
         if (!gfx.cmd) gfx_sdl_fail("acquiring a command buffer");
@@ -374,6 +384,12 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
     gfx_init_tables();
     SDL_SetAssertionHandler(gfx_assert_handler, NULL);
     SDL_SetHint(SDL_HINT_APP_NAME, "Goose");
+#ifdef SDL_PLATFORM_ANDROID
+    /* On Android each pass of SDL_WaitEventTimeout() pushes a poll sentinel that
+       ends the wait at once, so WAIT_WHEN_IDLE's wait would spin. frame() drains
+       all events itself, so it needs no sentinel. */
+    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+#endif
     if (windowed) {
         if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) return gfx_sdl_fail("initializing SDL video");
     } else {
@@ -512,6 +528,9 @@ void gs_gfx_close(void) {
         if (gfx.gamepads[i].pad) SDL_CloseGamepad(gfx.gamepads[i].pad);
     if (gfx.gamepad_inited) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     if (gfx.video_inited) SDL_QuitSubSystem(SDL_INIT_VIDEO);
+#ifdef SDL_PLATFORM_ANDROID
+    if (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) SDL_ResetHint(SDL_HINT_POLL_SENTINEL);
+#endif
     /* What went wrong outlives the device, for gs_gfx_error after a failed
        open. */
     char error[sizeof gfx.error];
@@ -563,18 +582,24 @@ void gs_gfx_quit(void) { gfx.quit = true; }
 
 /* --- frames ------------------------------------------------------------------ */
 
+/* WAIT_WHEN_IDLE: how long frame() waits after a frame that drew nothing,
+   and for how many frames it retries a present that got no image. */
+#define GFX_IDLE_WAIT_MS 1000
+#define GFX_PRESENT_TRIES 8
+
 /* Shows the screen in the window: a blit into the swapchain texture, which
-   may be missing (a minimized window), in which case nothing is shown. */
-static void gfx_present(void) {
+   may be missing (a minimized window, or a surface being recreated), in which
+   case nothing is shown and it returns false. */
+static bool gfx_present(void) {
     SDL_GPUCommandBuffer *cb = gfx_cmd();
-    if (!cb) return;
+    if (!cb) return false;
     SDL_GPUTexture *swap = NULL;
     Uint32 sw = 0, sh = 0;
     if (!SDL_WaitAndAcquireGPUSwapchainTexture(cb, gfx.window, &swap, &sw, &sh)) {
         gfx_sdl_fail("acquiring the window's image");
-        return;
+        return false;
     }
-    if (!swap) return;
+    if (!swap) return false;
     SDL_GPUBlitInfo bi;
     SDL_zero(bi);
     bi.source.texture = gfx_texture_slot_of(gfx.screen)->tex;
@@ -587,6 +612,7 @@ static void gfx_present(void) {
     bi.filter = sw == (Uint32)gfx.width && sh == (Uint32)gfx.height ? SDL_GPU_FILTER_NEAREST
                                                                      : SDL_GPU_FILTER_LINEAR;
     SDL_BlitGPUTexture(cb, &bi);
+    return true;
 }
 
 /* A new event at the end of this frame's list. */
@@ -790,9 +816,26 @@ uint8_t gs_gfx_frame(void) {
         gfx_misuse("frame() inside a %s pass: end the pass first", gfx.pass ? "render" : "compute");
         return 0;
     }
-    /* The first call starts the first frame; every later one ends one. */
-    if (gfx.window && gfx.frames > 0) gfx_present();
+    if (gfx.lost) return 0;
+    /* The first call starts the first frame; every later one ends one. With
+       WAIT_WHEN_IDLE a frame that drew nothing isn't presented, and the next one
+       waits for an event, up to GFX_IDLE_WAIT_MS so a program's timers still run. */
+    bool on_demand = (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) != 0;
+    bool work = gfx.gpu_work;           /* before the present's own blit */
+    bool drew = !on_demand || work || gfx.expose > 0;
+    if (gfx.window && gfx.frames > 0 && drew) {
+        /* No image: Android recreates the surface on resume, so retry for a few
+           frames before waiting. A minimized window waits after those too. */
+        if (gfx_present()) gfx.expose = 0;
+        else if (work) gfx.expose = GFX_PRESENT_TRIES;
+        else if (gfx.expose > 0) gfx.expose--;
+    }
     gfx_submit();
+    gfx.gpu_work = false;
+    if (gfx.window && gfx.frames > 0 && !drew) {
+        SDL_WaitEventTimeout(NULL, GFX_IDLE_WAIT_MS);
+        gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
+    }
     memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
     memset(gfx.released_keys, 0, sizeof gfx.released_keys);
     gfx.pressed_buttons = gfx.released_buttons = 0;
@@ -874,6 +917,13 @@ uint8_t gs_gfx_frame(void) {
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 gfx_update_input_scale();
                 resized = true;
+                gfx.expose = GFX_PRESENT_TRIES;
+                break;
+            case SDL_EVENT_WINDOW_EXPOSED:
+            case SDL_EVENT_WINDOW_SHOWN:
+            case SDL_EVENT_WINDOW_RESTORED:
+            case SDL_EVENT_DID_ENTER_FOREGROUND:
+                gfx.expose = GFX_PRESENT_TRIES;
                 break;
             default:
                 if (gfx.inject_event && e.type == gfx.inject_event && e.user.code >= 0 &&
