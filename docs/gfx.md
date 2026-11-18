@@ -174,6 +174,19 @@ fields in the same order, and the same constant values.
   and `frame()` returns false from then on, as if the window were closed.
   Direct3D 12's device removal and Metal's loss aren't recognized yet, as
   SDL reports them in other words.
+* **A window for another renderer** is the `WINDOW_ONLY` open flag: gfx opens
+  the window and keeps its input, events, cursor, clipboard, time and
+  `WAIT_WHEN_IDLE`'s wait, but makes no GPU device, and a call that needs one
+  is a misuse. `native_window()` is the handle the renderer draws into: a
+  `CAMetalLayer` on Apple's systems, the `HWND` on Windows, the
+  `ANativeWindow` on Android; on Linux the `wl_surface` or X11 window, with
+  `native_display()` its `wl_display` or `Display*` and `native_kind()`
+  `NATIVE_WAYLAND` or `NATIVE_X11`; 0 headless. `screen_size()` follows the
+  window's size in pixels. With `WAIT_WHEN_IDLE` the renderer reports each
+  frame with `presented(shown)`, and a frame that showed nothing makes the
+  next `frame()` wait; `needs_present()` is true for a few frames after the
+  window is exposed, shown, restored or resized. A program can use the flag
+  to choose its renderer at run time.
 * **Everything is in pixels.** A window always asks for the display's full
   pixel density, so on a high-density display its screen has more pixels
   than its size in the display's coordinates, which SDL gives the mouse in:
@@ -278,7 +291,9 @@ filtering, double-click cleanup, cursor restoration after close, and that
 `WAIT_WHEN_IDLE`'s `frame()` waits after a frame that drew nothing and not
 after one that drew, and that an event ends the wait; with SDL's virtual
 gamepad, that a press let go before `frame()` still counts, and that a press
-or a pushed stick ends the wait and a resting stick's stir doesn't. Physical
+or a pushed stick ends the wait and a resting stick's stir doesn't; and that
+`WINDOW_ONLY` gives a native window, the window's size, input, and the wait.
+Physical
 mouse confinement and Alt-Tab still need an interactive check on each platform.
 
 * **`test/gfx/`** in the regular suite: headless programs that render into
