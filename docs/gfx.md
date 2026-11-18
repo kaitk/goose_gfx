@@ -160,7 +160,9 @@ fields in the same order, and the same constant values.
   `WAIT_WHEN_IDLE`'s wait, but makes no GPU device, and a call that needs one
   is a misuse. `native_window()` is the handle the renderer draws into: a
   `CAMetalLayer` on Apple's systems, the `HWND` on Windows, the
-  `ANativeWindow` on Android; 0 headless. `screen_size()` follows the
+  `ANativeWindow` on Android; on Linux the `wl_surface` or X11 window, with
+  `native_display()` its `wl_display` or `Display*` and `native_kind()`
+  `NATIVE_WAYLAND` or `NATIVE_X11`; 0 headless. `screen_size()` follows the
   window's size in pixels. With `WAIT_WHEN_IDLE` the renderer reports each
   frame with `presented(shown)`, and a frame that showed nothing makes the
   next `frame()` wait; `needs_present()` is true for a few frames after the

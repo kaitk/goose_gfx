@@ -123,6 +123,8 @@ typedef struct {
        into the native window (native), and says when it presented. */
     bool platform_only;
     void *native;
+    void *native_display;               /* Linux: the wl_display or X11 Display* of native */
+    int native_kind;                    /* Linux: GS_GFX_NATIVE_WAYLAND or GS_GFX_NATIVE_X11 */
     SDL_MetalView metal_view;
     bool presented;
     SDL_GPUShaderFormat format;         /* what shaders are handed over as */

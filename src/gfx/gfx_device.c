@@ -384,6 +384,18 @@ static bool gfx_start_window_only(bool windowed, gs_gfx_bytes title, int64_t wid
 #elif defined(SDL_PLATFORM_ANDROID)
         gfx.native = SDL_GetPointerProperty(SDL_GetWindowProperties(gfx.window),
                                             SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+#elif defined(SDL_PLATFORM_LINUX)
+        SDL_PropertiesID props = SDL_GetWindowProperties(gfx.window);
+        if (SDL_strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0) {
+            gfx.native_kind = GS_GFX_NATIVE_WAYLAND;
+            gfx.native_display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
+            gfx.native = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+        } else {
+            gfx.native_kind = GS_GFX_NATIVE_X11;
+            gfx.native_display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+            gfx.native = (void *)(uintptr_t)SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+        }
+        if (!gfx.native_display) gfx.native = NULL;
 #endif
         if (!gfx.native) {
             gfx_sdl_fail("getting the window's native handle");
@@ -404,6 +416,10 @@ static bool gfx_start_window_only(bool windowed, gs_gfx_bytes title, int64_t wid
 }
 
 uint64_t gs_gfx_native_window(void) { return (uint64_t)(uintptr_t)gfx.native; }
+
+uint64_t gs_gfx_native_display(void) { return (uint64_t)(uintptr_t)gfx.native_display; }
+
+int64_t gs_gfx_native_kind(void) { return gfx.native_kind; }
 
 void gs_gfx_presented(uint8_t shown) {
     gfx.presented = shown != 0;
