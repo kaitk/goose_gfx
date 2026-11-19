@@ -220,12 +220,11 @@ fields in the same order, and the same constant values.
   one has no gamepads rather than a failed `open`. Buttons are kept from SDL's
   events as held state plus the latest `frame()`'s edges, as keys are, and a
   pad that disconnects releases what it held. Axes and rumble go straight to
-  SDL, with no deadzone.
-  SDL reads an open pad every millisecond, which would keep
-  `WAIT_WHEN_IDLE`'s wait awake, so with that flag gfx reads the pads at
-  each `frame()` instead, and while a pad is open and the window has focus
-  the idle wait lasts 16 ms rather than a second: the program sees a stick
-  move as soon as it would while drawing, and applies its own deadzone.
+  SDL, with no deadzone. SDL reads an open pad every millisecond, which would
+  keep `WAIT_WHEN_IDLE`'s wait awake, so with that flag gfx reads the pads
+  at each `frame()`, and while a pad is open and the window has focus the
+  idle wait lasts 16 ms rather than a second, so a stick move shows as soon
+  as it would while drawing.
   The `SYSTEM_GAMEPADS` open flag lets the system read the pads on Apple's
   systems and Android instead of SDL's HID drivers, and wake the wait itself;
   on Apple's systems gfx sets each pad's GameController change handler,
