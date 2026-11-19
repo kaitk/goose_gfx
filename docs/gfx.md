@@ -143,6 +143,17 @@ fields in the same order, and the same constant values.
   screen are ordinary texture downloads, and a minimized window (no swapchain
   image) only skips the blit. A headless device (`open_headless`, or `open`
   under `GOOSE_GFX_HEADLESS=1`) has the same screen and no window.
+* **Drawing on demand** is the `WAIT_WHEN_IDLE` open flag. Without it every
+  `frame()` presents. With it, `frame()` presents only when something used
+  the GPU since the last one (a pass, a copy, an upload) or the window needs
+  its image again (exposed, shown, restored, back in the foreground). After a
+  frame that presented nothing, the next `frame()` waits for an event, up to
+  a second so a program's timers still run, except after `quit()`;
+  `delta_time()` leaves the wait out. A resize makes a new, black screen, so
+  a program redraws when `screen_size()` changes. When the window gives no
+  image (minimized, or Android recreating its surface), the present is
+  retried for up to 8 frames before `frame()` waits. On Android the flag
+  turns off SDL's poll sentinel, which would end every wait at once.
 * **Everything is in pixels.** A window always asks for the display's full
   pixel density, so on a high-density display its screen has more pixels
   than its size in the display's coordinates, which SDL gives the mouse in:
@@ -226,8 +237,10 @@ focus loss and reacquisition, release edges/events, ignored background input,
 and headless close/reopen. `python test/window/run_input_test.py --exe
 <goose>` complements it on a machine with a display and GPU: a hidden real
 window verifies the SDL mode/visibility setters, unrelated-window focus
-filtering, double-click cleanup, and cursor restoration after close. Physical
-mouse confinement and Alt-Tab still need an interactive check on each platform.
+filtering, double-click cleanup, cursor restoration after close, and that
+with `WAIT_WHEN_IDLE` `frame()` waits after a frame that drew nothing, not
+after one that drew, until an event. Physical mouse confinement and Alt-Tab
+still need an interactive check on each platform.
 
 * **`test/gfx/`** in the regular suite: headless programs that render into
   textures and read them back (geometry, depth, instancing, storage-buffer
