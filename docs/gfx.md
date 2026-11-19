@@ -174,7 +174,7 @@ fields in the same order, and the same constant values.
   program drawing each frame would spin. gfx prints the first such failure,
   and `frame()` returns false from then on, as if the window were closed.
   Direct3D 12's device removal and Metal's loss aren't recognized yet, as
-  SDL reports them in other words.
+  SDL words them differently.
 * **A window for another renderer** is the `WINDOW_ONLY` open flag: gfx opens
   the window and keeps its input, events, cursor, clipboard, time and
   `WAIT_WHEN_IDLE`'s wait, but makes no GPU device, and a call that needs one
