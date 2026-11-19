@@ -1134,7 +1134,12 @@ uint8_t gs_gfx_frame(void) {
         gfx.gamepads[i].pressed = gfx.gamepads[i].released = 0;
     gfx.nevents = 0;
     bool resized = false;
-    if (on_demand) SDL_UpdateJoysticks();   /* SDL's own updates are off */
+    if (on_demand) {
+        /* SDL's own updates are off. The idle wait leaves SDL's poll sentinel
+           queued, which would end the loop below before the pads' events. */
+        SDL_UpdateJoysticks();
+        SDL_FlushEvent(SDL_EVENT_POLL_SENTINEL);
+    }
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
