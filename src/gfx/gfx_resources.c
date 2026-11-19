@@ -480,6 +480,10 @@ uint8_t gs_gfx_update_texture(gs_gfx_texture t, const gs_gfx_region *region, gs_
     gfx_texture_slot *s = gfx_texture_slot_of(t);
     if (!s) return 0;
     if (s->desc.samples > 1) return gfx_misuse("update_texture: a multisampled texture");
+    /* A compressed region's edges must fall on its blocks, so it takes whole
+       mips only, which is what a file of mips holds anyway. */
+    if (gfx_is_compressed(s->desc.format) && region->w != 0)
+        return gfx_misuse("update_texture: a compressed texture takes whole mips (region w 0)");
     SDL_GPUTextureRegion reg;
     if (!gfx_region(s, region, &reg, "update_texture") ||
         !gfx_texture_bytes(s, &reg, data.len, "update_texture"))
