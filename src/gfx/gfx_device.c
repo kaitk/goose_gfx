@@ -362,6 +362,9 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
        all events itself, so it needs no sentinel. */
     if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
 #endif
+    /* With a pad open, SDL_WaitEventTimeout() wakes every 1 ms to read it.
+       WAIT_WHEN_IDLE reads the pads in frame() instead, and caps the wait. */
+    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
     if (windowed) {
         if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) return gfx_sdl_fail("initializing SDL video");
     } else {
@@ -495,6 +498,7 @@ void gs_gfx_close(void) {
 #ifdef SDL_PLATFORM_ANDROID
     if (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) SDL_ResetHint(SDL_HINT_POLL_SENTINEL);
 #endif
+    if (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) SDL_ResetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS);
     /* What went wrong outlives the device, for gs_gfx_error after a failed
        open. */
     char error[sizeof gfx.error];
@@ -550,6 +554,10 @@ void gs_gfx_quit(void) { gfx.quit = true; }
    and for how many frames it retries a present that got no image. */
 #define GFX_IDLE_WAIT_MS 1000
 #define GFX_PRESENT_TRIES 8
+/* With a pad open and focus (without it SDL drops pad input), the idle wait
+   ends this often, so frame() reads the pads and the program sees a stick
+   move, with its own deadzone, as soon as it would while drawing. */
+#define GFX_GAMEPAD_WAIT_MS 16
 
 /* Shows the screen in the window: a blit into the swapchain texture, which
    may be missing (a minimized window, or a surface being recreated), in which
@@ -796,7 +804,9 @@ uint8_t gs_gfx_frame(void) {
     gfx_submit();
     gfx.gpu_work = false;
     if (gfx.window && gfx.frames > 0 && !drew && !gfx.quit) {
-        SDL_WaitEventTimeout(NULL, GFX_IDLE_WAIT_MS);
+        bool pads = false;
+        for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++) pads |= gfx.gamepads[i].pad != NULL;
+        SDL_WaitEventTimeout(NULL, pads && gfx.focused ? GFX_GAMEPAD_WAIT_MS : GFX_IDLE_WAIT_MS);
         gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
     }
     memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
@@ -807,6 +817,12 @@ uint8_t gs_gfx_frame(void) {
         gfx.gamepads[i].pressed = gfx.gamepads[i].released = 0;
     gfx.nevents = 0;
     bool resized = false;
+    if (on_demand) {
+        /* SDL's own updates are off. The idle wait leaves SDL's poll sentinel
+           queued, which would end the loop below before the pads' events. */
+        SDL_UpdateJoysticks();
+        SDL_FlushEvent(SDL_EVENT_POLL_SENTINEL);
+    }
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
