@@ -127,8 +127,9 @@ let DEPTH24: i32 = 17;
 let DEPTH32F: i32 = 18;
 let DEPTH24_STENCIL8: i32 = 19;
 let DEPTH: i32 = 20;
-// Block-compressed, SAMPLED only, uploaded in whole blocks: BC on desktop GPUs,
-// ASTC on mobile and Apple GPUs. Ask format_supported before using one.
+// Block-compressed, SAMPLED only, uploaded a whole mip at a time (region w 0)
+// in whole blocks: BC on desktop GPUs, ASTC on mobile and Apple GPUs. Ask
+// format_supported before using one.
 let BC1: i32 = 21;
 let BC3: i32 = 22;
 let BC7: i32 = 23;
