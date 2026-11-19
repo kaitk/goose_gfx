@@ -94,7 +94,8 @@ uint8_t gs_gfx_begin_pass(const gs_gfx_pass_desc *d) {
         dt.store_op = SDL_GPU_STOREOP_STORE;
         dt.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
         dt.stencil_store_op = SDL_GPU_STOREOP_STORE;
-        dt.cycle = d->clear_depth != 0;
+        /* Not the screen's, for the same reason as the screen. */
+        dt.cycle = d->clear_depth != 0 && d->depth.id != gfx.screen_depth.id;
         t.has_depth = true;
         t.depth = s->format;
     }

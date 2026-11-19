@@ -144,9 +144,11 @@ fields in the same order, and the same constant values.
   image) only skips the blit. A headless device (`open_headless`, or `open`
   under `GOOSE_GFX_HEADLESS=1`) has the same screen and no window.
   Its depth texture is made on the first `screen_depth()` and remade with the
-  screen after that, so a 2D program has none. Clearing the screen doesn't
-  cycle it: the last frame's blit nearly always still reads it, so cycling
-  would keep two or three window-sized copies.
+  screen after that, so a 2D program that draws with
+  `begin_pass(screen(), Texture { 0 }, clear)` rather than `begin_screen`
+  has none. Clearing the screen or its depth
+  doesn't cycle them: the last frame nearly always still holds them, so
+  cycling would keep two or three window-sized copies of each.
 * **Everything is in pixels.** A window always asks for the display's full
   pixel density, so on a high-density display its screen has more pixels
   than its size in the display's coordinates, which SDL gives the mouse in:
