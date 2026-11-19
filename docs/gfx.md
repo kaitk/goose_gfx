@@ -144,15 +144,17 @@ fields in the same order, and the same constant values.
   image) only skips the blit. A headless device (`open_headless`, or `open`
   under `GOOSE_GFX_HEADLESS=1`) has the same screen and no window.
   Its depth texture is made on the first `screen_depth()` and remade with the
-  screen after that, so a 2D program has none. Clearing the screen doesn't
-  cycle it: the last frame's blit nearly always still reads it, so cycling
-  would keep two or three window-sized copies.
-* **Multisampled targets aren't kept.** A pass resolves a multisampled color
-  target without storing its samples, and doesn't store a multisampled depth
-  target, so a tiling GPU never writes them to memory. After the pass their
-  contents are undefined: a later pass clears them rather than loads them.
-  Neither is cycled on clear. A single-sampled depth target is stored, as it
-  may be a shadow map.
+  screen after that, so a 2D program that draws with
+  `begin_pass(screen(), Texture { 0 }, clear)` rather than `begin_screen`
+  has none. Clearing the screen or its depth
+  doesn't cycle them: the last frame nearly always still holds them, so
+  cycling would keep two or three window-sized copies of each.
+* **A resolving pass is its multisampled targets' last.** A pass that
+  resolves drops the samples of its multisampled color and depth targets
+  rather than store them, so a tiling GPU never writes them to memory. A
+  later pass that loads them rather than clears them is a misuse. A pass
+  that doesn't resolve stores them, so a frame can draw over several passes
+  and resolve in the last. Multisampled targets aren't cycled on clear.
 * **Drawing on demand** is the `WAIT_WHEN_IDLE` open flag. Without it every
   `frame()` presents, so a program that draws nothing still redraws the
   window at the display's rate. With it, `frame()` presents only when

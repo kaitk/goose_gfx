@@ -416,8 +416,9 @@ extern fn fullscreen() -> bool = "gs_gfx_fullscreen";
 extern fn maximize() = "gs_gfx_maximize";
 
 // The screen: what a frame draws into, an RGBA8 texture of the window's
-// size in pixels, with a depth texture to go with it. Both keep their
-// handles when the window resizes.
+// size in pixels. Its depth texture is made on the first screen_depth(), so
+// a 2D program that wants none passes Texture { 0 } to begin_pass instead
+// of calling begin_screen. Both keep their handles when the window resizes.
 extern fn screen() -> Texture = "gs_gfx_screen";
 extern fn screen_depth() -> Texture = "gs_gfx_screen_depth";
 extern fn screen_size_into(out: int2&) = "gs_gfx_screen_size";
@@ -770,7 +771,8 @@ fn begin_pass(target: Texture, depth: Texture, clear: float4) -> bool {
     d.color[0] = target;
     begin_pass_desc(d)
 }
-// Into the screen and its depth, cleared to `clear`.
+// Into the screen and its depth, cleared to `clear`; this makes the depth
+// texture, so 2D goes through begin_pass(screen(), Texture { 0 }, clear).
 fn begin_screen(clear: float4) -> bool { begin_pass(screen(), screen_depth(), clear) }
 
 extern fn bind(p: Pipeline) = "gs_gfx_bind_pipeline";
