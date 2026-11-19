@@ -156,18 +156,16 @@ fields in the same order, and the same constant values.
   that doesn't resolve stores them, so a frame can draw over several passes
   and resolve in the last. Multisampled targets aren't cycled on clear.
 * **Drawing on demand** is the `WAIT_WHEN_IDLE` open flag. Without it every
-  `frame()` presents, so a program that draws nothing still redraws the
-  window at the display's rate. With it, `frame()` presents only when
-  something used the GPU since the last one (a pass, a copy, an upload) or
-  the window needs its image again (exposed, shown, restored, back in the
-  foreground). A resize makes a new screen, black, so a program redraws
-  when `screen_size()` changes. After a frame that presented nothing, the
-  next `frame()` waits for an event, up to a second so a program's timers
-  still run, and `delta_time()` leaves the wait out; not after `quit()`. A
-  program that animates draws every frame and never waits. When the window gives no image (minimized, or
-  Android recreating its surface), the present is retried for up to 8 frames
-  before `frame()` waits. On Android the flag turns off SDL's poll sentinel,
-  which would end every wait at once.
+  `frame()` presents. With it, `frame()` presents only when something used
+  the GPU since the last one (a pass, a copy, an upload) or the window needs
+  its image again (exposed, shown, restored, back in the foreground). After a
+  frame that presented nothing, the next `frame()` waits for an event, up to
+  a second so a program's timers still run, except after `quit()`;
+  `delta_time()` leaves the wait out. A resize makes a new, black screen, so
+  a program redraws when `screen_size()` changes. When the window gives no
+  image (minimized, or Android recreating its surface), the present is
+  retried for up to 8 frames before `frame()` waits. On Android the flag
+  turns off SDL's poll sentinel, which would end every wait at once.
   On iOS, where SDL's wait polls every millisecond, gfx runs the main run
   loop for the timeout instead; an event pushed from another thread, such as
   an SDL timer's, signals a run loop source of gfx's own to end it.
@@ -291,14 +289,13 @@ and headless close/reopen. `python test/window/run_input_test.py --exe
 <goose>` complements it on a machine with a display and GPU: a hidden real
 window verifies the SDL mode/visibility setters, unrelated-window focus
 filtering, double-click cleanup, cursor restoration after close, and that
-`WAIT_WHEN_IDLE`'s `frame()` waits after a frame that drew nothing and not
-after one that drew, and that an event ends the wait; with SDL's virtual
-gamepad, that a press let go before `frame()` still counts, that the wait is
-short with a pad open, and that a slight stick move and a press show at the
-next frame; and that
-`WINDOW_ONLY` gives a native window, the window's size, input, and the wait.
-Physical
-mouse confinement and Alt-Tab still need an interactive check on each platform.
+with `WAIT_WHEN_IDLE` `frame()` waits after a frame that drew nothing, not
+after one that drew, until an event; with SDL's virtual gamepad, that a
+press let go before `frame()` still counts, that the wait is short with a pad
+open, and that a slight stick move and a press show at the next frame; and
+that `WINDOW_ONLY` gives a native window, the window's size, input, and the
+wait. Physical mouse confinement and Alt-Tab still need an interactive check
+on each platform.
 
 * **`test/gfx/`** in the regular suite: headless programs that render into
   textures and read them back (geometry, depth, instancing, storage-buffer
