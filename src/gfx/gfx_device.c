@@ -65,12 +65,12 @@ bool gfx_sdl_fail(const char *what) {
 
 bool gfx_need_device(const char *what) {
     if (gfx.dev) return true;
-    if (gfx.platform_only) return gfx_misuse("%s: gfx is open WINDOW_ONLY, with no device", what);
+    if (gfx.window_only) return gfx_misuse("%s: gfx is open WINDOW_ONLY, with no device", what);
     return gfx_misuse("%s: gfx is not open (call gfx::open or gfx::open_headless first)", what);
 }
 
 bool gfx_need_open(const char *what) {
-    if (gfx.dev || gfx.platform_only) return true;
+    if (gfx.dev || gfx.window_only) return true;
     return gfx_misuse("%s: gfx is not open (call gfx::open or gfx::open_headless first)", what);
 }
 
@@ -393,7 +393,7 @@ static void gfx_seed_mouse(void) {
 /* WINDOW_ONLY's open: the window and its native handle, and no device. */
 static bool gfx_start_window_only(bool windowed, gs_gfx_bytes title, int64_t width,
                                   int64_t height, int64_t flags) {
-    gfx.platform_only = true;
+    gfx.window_only = true;
     gfx.width = (int)width;
     gfx.height = (int)height;
     gfx.window_w = gfx.window_h = gfx.window_pw = gfx.window_ph = 1;
@@ -467,7 +467,7 @@ uint8_t gs_gfx_needs_present(void) { return gfx.expose > 0; }
 
 static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t height,
                       int64_t flags) {
-    if (gfx.dev || gfx.platform_only) return gfx_misuse("gfx is already open: close() it first");
+    if (gfx.dev || gfx.window_only) return gfx_misuse("gfx is already open: close() it first");
     /* A windowed program run by a test runner draws off screen instead. */
     const char *headless = SDL_getenv("GOOSE_GFX_HEADLESS");
     if (headless && SDL_atoi(headless)) windowed = false;
@@ -1107,9 +1107,9 @@ uint8_t gs_gfx_frame(void) {
        WINDOW_ONLY's renderer presents itself and says whether it did. */
     bool on_demand = (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) != 0;
     bool work = gfx.gpu_work;           /* before the present's own blit */
-    bool drew = !on_demand || (gfx.platform_only ? gfx.presented : work || gfx.expose > 0);
+    bool drew = !on_demand || (gfx.window_only ? gfx.presented : work || gfx.expose > 0);
     gfx.presented = false;
-    if (gfx.platform_only) {
+    if (gfx.window_only) {
         /* needs_present() stays true a few frames after an expose, as gfx
            retries its own present. */
         if (!drew && gfx.expose > 0) gfx.expose--;
@@ -1237,7 +1237,7 @@ uint8_t gs_gfx_frame(void) {
         int w = 0, h = 0;
         SDL_GetWindowSizeInPixels(gfx.window, &w, &h);
         if (w > 0 && h > 0 && (w != gfx.width || h != gfx.height)) {
-            if (gfx.platform_only) {
+            if (gfx.window_only) {
                 gfx.width = w;
                 gfx.height = h;
             } else {
@@ -1253,7 +1253,7 @@ uint8_t gs_gfx_frame(void) {
 }
 
 double gs_gfx_time(void) {
-    return gfx.dev || gfx.platform_only ? (double)(SDL_GetTicksNS() - gfx.start_ns) / 1e9 : 0.0;
+    return gfx.dev || gfx.window_only ? (double)(SDL_GetTicksNS() - gfx.start_ns) / 1e9 : 0.0;
 }
 
 double gs_gfx_delta_time(void) { return gfx.delta; }
