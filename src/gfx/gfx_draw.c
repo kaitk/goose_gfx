@@ -26,11 +26,20 @@ uint8_t gs_gfx_begin_pass(const gs_gfx_pass_desc *d) {
     t.samples = SDL_GPU_SAMPLECOUNT_1;
     int32_t samples = 0;
     uint32_t w = 0, h = 0;
+    /* A resolving pass is its multisampled targets' last: their samples are
+       dropped, and loading them later is a misuse. Set once the pass begins. */
+    gfx_texture_slot *slots[4], *depth_slot = NULL;
+    bool resolving = false;
+    for (int i = 0; i < 4 && d->color[i].id; i++) resolving |= d->resolve[i].id != 0;
     for (int i = 0; i < 4 && d->color[i].id; i++) {
         gfx_texture_slot *s = gfx_texture_slot_of(d->color[i]);
         if (!s) return 0;
         if (!(s->usage & SDL_GPU_TEXTUREUSAGE_COLOR_TARGET))
             return gfx_misuse("begin_pass: color target %d was not created with COLOR_TARGET", i);
+        if (s->discarded && !d->clear_color)
+            return gfx_misuse("begin_pass: color target %d lost its samples to an earlier "
+                              "resolving pass, so it must be cleared", i);
+        slots[i] = s;
         int32_t layers = s->desc.kind == GS_GFX_TEXTURE_CUBE ? 6
                        : s->desc.kind == GS_GFX_TEXTURE_2D ? 1 : s->desc.depth;
         if (d->mip < 0 || d->mip >= s->desc.mips || d->layer < 0 || d->layer >= layers)
@@ -83,6 +92,10 @@ uint8_t gs_gfx_begin_pass(const gs_gfx_pass_desc *d) {
         if (!s) return 0;
         if (!(s->usage & SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET))
             return gfx_misuse("begin_pass: the depth target was not created with DEPTH_TARGET");
+        if (s->discarded && !d->clear_depth)
+            return gfx_misuse("begin_pass: the depth target lost its samples to an earlier "
+                              "resolving pass, so it must be cleared");
+        depth_slot = s;
         if (t.ncolor && ((uint32_t)s->desc.width != w || (uint32_t)s->desc.height != h ||
                          s->desc.samples != samples))
             return gfx_misuse("begin_pass: the depth target is %d x %d with %d sample(s), the "
@@ -94,10 +107,11 @@ uint8_t gs_gfx_begin_pass(const gs_gfx_pass_desc *d) {
         dt.texture = s->tex;
         dt.clear_depth = d->depth_value;
         dt.load_op = d->clear_depth ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-        /* A multisampled depth can't be sampled or resolved, so nothing reads
-           it after the pass; a single-sampled one may be a shadow map. */
-        SDL_GPUStoreOp depth_store = s->desc.samples > 1 ? SDL_GPU_STOREOP_DONT_CARE
-                                                         : SDL_GPU_STOREOP_STORE;
+        /* A multisampled depth can't be sampled or resolved, so after the
+           resolving pass nothing reads it; before that, a later pass may
+           draw on, and a single-sampled one may be a shadow map. */
+        SDL_GPUStoreOp depth_store = resolving && s->desc.samples > 1
+                                         ? SDL_GPU_STOREOP_DONT_CARE : SDL_GPU_STOREOP_STORE;
         dt.store_op = depth_store;
         dt.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
         dt.stencil_store_op = depth_store;
@@ -115,6 +129,8 @@ uint8_t gs_gfx_begin_pass(const gs_gfx_pass_desc *d) {
     if (!cb) return 0;
     gfx.pass = SDL_BeginGPURenderPass(cb, ct, (Uint32)t.ncolor, t.has_depth ? &dt : NULL);
     if (!gfx.pass) return gfx_sdl_fail("beginning a render pass");
+    for (int i = 0; i < t.ncolor; i++) slots[i]->discarded = d->resolve[i].id != 0;
+    if (depth_slot) depth_slot->discarded = dt.store_op == SDL_GPU_STOREOP_DONT_CARE;
     gfx.targets = t;
     gfx.pipeline = NULL;
     gfx_reset_bindings();

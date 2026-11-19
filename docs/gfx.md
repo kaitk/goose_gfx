@@ -149,12 +149,12 @@ fields in the same order, and the same constant values.
   has none. Clearing the screen or its depth
   doesn't cycle them: the last frame nearly always still holds them, so
   cycling would keep two or three window-sized copies of each.
-* **Multisampled targets aren't kept.** A pass resolves a multisampled color
-  target without storing its samples, and doesn't store a multisampled depth
-  target, so a tiling GPU never writes them to memory. After the pass their
-  contents are undefined: a later pass clears them rather than loads them.
-  Neither is cycled on clear. A single-sampled depth target is stored, as it
-  may be a shadow map.
+* **A resolving pass is its multisampled targets' last.** A pass that
+  resolves drops the samples of its multisampled color and depth targets
+  rather than store them, so a tiling GPU never writes them to memory. A
+  later pass that loads them rather than clears them is a misuse. A pass
+  that doesn't resolve stores them, so a frame can draw over several passes
+  and resolve in the last. Multisampled targets aren't cycled on clear.
 * **Everything is in pixels.** A window always asks for the display's full
   pixel density, so on a high-density display its screen has more pixels
   than its size in the display's coordinates, which SDL gives the mouse in:
