@@ -773,8 +773,7 @@ fn begin_pass(target: Texture, depth: Texture, clear: float4) -> bool {
     d.color[0] = target;
     begin_pass_desc(d)
 }
-// Into the screen and its depth, cleared to `clear`; this makes the depth
-// texture, so 2D goes through begin_pass(screen(), Texture { 0 }, clear).
+// Into the screen and its depth, cleared to `clear`.
 fn begin_screen(clear: float4) -> bool { begin_pass(screen(), screen_depth(), clear) }
 
 extern fn bind(p: Pipeline) = "gs_gfx_bind_pipeline";

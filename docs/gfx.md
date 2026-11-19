@@ -143,12 +143,12 @@ fields in the same order, and the same constant values.
   screen are ordinary texture downloads, and a minimized window (no swapchain
   image) only skips the blit. A headless device (`open_headless`, or `open`
   under `GOOSE_GFX_HEADLESS=1`) has the same screen and no window.
-  Its depth texture is made on the first `screen_depth()` and remade with the
-  screen after that, so a 2D program that draws with
-  `begin_pass(screen(), Texture { 0 }, clear)` rather than `begin_screen`
-  has none. Clearing the screen or its depth
-  doesn't cycle them: the last frame nearly always still holds them, so
-  cycling would keep two or three window-sized copies of each.
+  The screen's depth texture is made on the first `screen_depth()`, which
+  `begin_screen` calls, and remade with the screen after that; a 2D program
+  that draws with `begin_pass(screen(), Texture { 0 }, clear)` has none.
+  Clearing the screen or its depth doesn't cycle them: the last frame nearly
+  always still uses them, so cycling would keep two or three window-sized
+  copies of each.
 * **A resolving pass is its multisampled targets' last.** A pass that
   resolves drops the samples of its multisampled color and depth targets
   rather than store them, so a tiling GPU never writes them to memory. A
