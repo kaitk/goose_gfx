@@ -525,9 +525,9 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
 #endif
     const char *env = SDL_getenv("GOOSE_GFX_DEBUG");
     if (env) debug = SDL_atoi(env) != 0;
-    /* gfx always clips depth, so it never needs Vulkan's depth clamp. Clip
-       distances are the program's shaders' to use, so they stay on where the
-       GPU has them; a device without them (Mali's Vulkan) gets a second try. */
+    /* gfx always clips depth, so it never needs Vulkan's depth clamp. Shaders
+       may use clip distances, so they stay on where the GPU has them; a device
+       without them (Mali's Vulkan) gets a second try. */
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN,
                            (formats & SDL_GPU_SHADERFORMAT_SPIRV) != 0);
