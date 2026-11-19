@@ -55,7 +55,8 @@ let WINDOW_FULLSCREEN: i32 = 4;
 let NO_VSYNC: i32 = 16;
 let DEBUG: i32 = 32;            // validation layers, where installed; on in a debug build of gfx
 // A frame that drew nothing isn't presented, and the next frame() waits for an
-// event, up to a second: an idle program uses no GPU and next to no CPU.
+// event, up to a second: an idle program uses no GPU and next to no CPU. A
+// resize leaves the screen black, so redraw when screen_size() changes.
 let WAIT_WHEN_IDLE: i32 = 256;
 // On Apple's systems and Android the system reads the gamepads, not SDL, and
 // wakes WAIT_WHEN_IDLE's wait when one is used. It knows fewer pads and less

@@ -159,11 +159,12 @@ fields in the same order, and the same constant values.
   `frame()` presents, so a program that draws nothing still redraws the
   window at the display's rate. With it, `frame()` presents only when
   something used the GPU since the last one (a pass, a copy, an upload) or
-  the window needs its image again (exposed, shown, restored, resized, back
-  in the foreground). After a frame that presented nothing, the next
-  `frame()` waits for an event, up to a second so a program's timers still
-  run, and `delta_time()` leaves the wait out. A program that animates draws
-  every frame and never waits. When the window gives no image (minimized, or
+  the window needs its image again (exposed, shown, restored, back in the
+  foreground). A resize makes a new screen, black, so a program redraws
+  when `screen_size()` changes. After a frame that presented nothing, the
+  next `frame()` waits for an event, up to a second so a program's timers
+  still run, and `delta_time()` leaves the wait out; not after `quit()`. A
+  program that animates draws every frame and never waits. When the window gives no image (minimized, or
   Android recreating its surface), the present is retried for up to 8 frames
   before `frame()` waits. On Android the flag turns off SDL's poll sentinel,
   which would end every wait at once.
@@ -223,10 +224,10 @@ fields in the same order, and the same constant values.
   pad that disconnects releases what it held. Axes and rumble go straight to
   SDL, with no deadzone.
   SDL reads an open pad every millisecond, which would keep
-  `WAIT_WHEN_IDLE`'s wait awake, so with that flag gfx reads the pads itself:
-  at each `frame()`, and in the wait every 16 ms while the window has focus.
-  The wait ends on a button or an axis moved a quarter of its way, not as a
-  resting stick wanders.
+  `WAIT_WHEN_IDLE`'s wait awake, so with that flag gfx reads the pads at
+  each `frame()` instead, and while a pad is open and the window has focus
+  the idle wait lasts 16 ms rather than a second: the program sees a stick
+  move as soon as it would while drawing, and applies its own deadzone.
   The `SYSTEM_GAMEPADS` open flag lets the system read the pads on Apple's
   systems and Android instead of SDL's HID drivers, and wake the wait itself;
   on Apple's systems gfx sets each pad's GameController change handler,
@@ -292,8 +293,9 @@ window verifies the SDL mode/visibility setters, unrelated-window focus
 filtering, double-click cleanup, cursor restoration after close, and that
 `WAIT_WHEN_IDLE`'s `frame()` waits after a frame that drew nothing and not
 after one that drew, and that an event ends the wait; with SDL's virtual
-gamepad, that a press let go before `frame()` still counts, and that a press
-or a pushed stick ends the wait and a resting stick's stir doesn't; and that
+gamepad, that a press let go before `frame()` still counts, that the wait is
+short with a pad open, and that a slight stick move and a press show at the
+next frame; and that
 `WINDOW_ONLY` gives a native window, the window's size, input, and the wait.
 Physical
 mouse confinement and Alt-Tab still need an interactive check on each platform.

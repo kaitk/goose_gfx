@@ -31,14 +31,6 @@ static Uint32 SDLCALL push_wake(void *userdata, SDL_TimerID timer, Uint32 interv
 
 static SDL_Joystick *virtual_pad;
 
-static Uint32 SDLCALL push_stick(void *userdata, SDL_TimerID timer, Uint32 interval) {
-    (void)userdata;
-    (void)timer;
-    (void)interval;
-    SDL_SetJoystickVirtualAxis(virtual_pad, SDL_GAMEPAD_AXIS_LEFTX, 24000);
-    return 0;
-}
-
 /* frame()'s next call, timed in milliseconds. */
 static Uint64 timed_frame(void) {
     Uint64 t = SDL_GetTicks();
@@ -47,8 +39,8 @@ static Uint64 timed_frame(void) {
 }
 
 /* WAIT_WHEN_IDLE with SDL's virtual gamepad: a press let go before frame()
-   counts, and the wait reads the pad, ending for a pushed stick but not for a
-   resting stick's stir. */
+   counts, and with a pad open the wait is short, so a press or the slightest
+   stick move shows within a frame or two. */
 static void gamepad_checks(void) {
     SDL_VirtualJoystickDesc desc;
     SDL_INIT_INTERFACE(&desc);
@@ -78,24 +70,19 @@ static void gamepad_checks(void) {
     check(gs_gfx_gamepad_pressed(slot, SDL_GAMEPAD_BUTTON_SOUTH) && !gs_gfx_gamepad_down(slot, SDL_GAMEPAD_BUTTON_SOUTH),
           "a press let go before frame() still counts");
 
-    /* Until a frame waits its full second, the window may still be showing. */
-    bool idle = false;
-    for (int i = 0; i < 12 && !idle; i++) idle = timed_frame() >= 900;
-    check(idle, "a frame that drew nothing waits");
+    /* Until the present's retries run out, the hidden window may not wait. */
+    Uint64 idle = 0;
+    for (int i = 0; i < 12; i++) idle = timed_frame();
+    check(idle >= 10 && idle < 100, "with a pad open, a frame that drew nothing waits briefly");
     SDL_SetJoystickVirtualAxis(virtual_pad, SDL_GAMEPAD_AXIS_LEFTX, 1500);
-    Uint64 stir = timed_frame();
-    check(stir >= 900, "a resting stick's stir doesn't end the wait");
-    SDL_SetJoystickVirtualButton(virtual_pad, SDL_GAMEPAD_BUTTON_EAST, true);
-    Uint64 press = timed_frame();
-    check(press < 100 && gs_gfx_gamepad_pressed(slot, SDL_GAMEPAD_BUTTON_EAST), "a press ends the wait");
-    SDL_SetJoystickVirtualButton(virtual_pad, SDL_GAMEPAD_BUTTON_EAST, false);
     timed_frame();
-    SDL_AddTimer(200, push_stick, NULL);
-    Uint64 push = timed_frame();
-    check(push >= 150 && push < 400 && gs_gfx_gamepad_axis(slot, SDL_GAMEPAD_AXIS_LEFTX) > 0.7f,
-          "a stick pushed ends the wait within a read");
-    printf("gamepad waits: stir %llu ms, press %llu ms, push at 200 ms %llu ms\n",
-           (unsigned long long)stir, (unsigned long long)press, (unsigned long long)push);
+    check(gs_gfx_gamepad_axis(slot, SDL_GAMEPAD_AXIS_LEFTX) > 0.0f,
+          "a slight stick move shows, with no deadzone");
+    SDL_SetJoystickVirtualButton(virtual_pad, SDL_GAMEPAD_BUTTON_EAST, true);
+    timed_frame();
+    check(gs_gfx_gamepad_pressed(slot, SDL_GAMEPAD_BUTTON_EAST), "a press shows at the next frame");
+    SDL_SetJoystickVirtualButton(virtual_pad, SDL_GAMEPAD_BUTTON_EAST, false);
+    printf("gamepad wait: %llu ms\n", (unsigned long long)idle);
     SDL_CloseJoystick(virtual_pad);
     SDL_DetachVirtualJoystick(id);
     gs_gfx_frame();

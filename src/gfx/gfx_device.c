@@ -485,8 +485,8 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
     if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
 #endif
     /* With a pad open, SDL_WaitEventTimeout() wakes every 1 ms to read it.
-       WAIT_WHEN_IDLE reads the pads itself instead: each frame, and in the wait
-       every GFX_GAMEPAD_POLL_MS unless the system wakes it. */
+       WAIT_WHEN_IDLE reads the pads in frame() instead, and caps the wait
+       unless the system wakes it. */
     if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
 #if defined(SDL_PLATFORM_APPLE) || defined(SDL_PLATFORM_ANDROID)
     /* SDL's HID drivers report a pad only when gfx reads it; without them the
@@ -758,57 +758,19 @@ static void gfx_wait_events(int ms) {
 static void gfx_wait_events(int ms) { SDL_WaitEventTimeout(NULL, ms); }
 #endif
 
-/* With focus (without it SDL drops pad input), the idle wait reads the pads
-   the system doesn't wake it for this often, and ends when an axis moves this
-   far: a resting stick wanders a few percent, which mustn't wake the program. */
-#define GFX_GAMEPAD_POLL_MS 16
-#define GFX_GAMEPAD_AXIS_WAKE 8192
+/* With a pad open that the system doesn't wake the wait for, and focus
+   (without it SDL drops pad input), the idle wait ends this often, so frame()
+   reads the pads and the program sees a stick move, with its own deadzone, as
+   soon as it would while drawing. */
+#define GFX_GAMEPAD_WAIT_MS 16
 
-/* The idle wait for pads gfx reads itself: ends on any event but a small axis
-   move. */
-static void gfx_wait_reading_pads(int ms) {
-    Sint16 axes[GS_GFX_MAX_GAMEPADS][SDL_GAMEPAD_AXIS_COUNT];
-    SDL_UpdateJoysticks();
-    for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++) {
-        if (!gfx.gamepads[i].pad) continue;
-        for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
-            axes[i][a] = SDL_GetGamepadAxis(gfx.gamepads[i].pad, (SDL_GamepadAxis)a);
-    }
-    Uint64 end = SDL_GetTicks() + (Uint64)ms;
-    for (;;) {
-        /* Axis and joystick events don't end it: frame() reads axes as state,
-           and SDL's gamepad layer has seen the joystick events. A peek, as
-           SDL_HasEvents() counts the poll sentinel each wait leaves. */
-        SDL_FlushEvents(SDL_EVENT_JOYSTICK_AXIS_MOTION, SDL_EVENT_JOYSTICK_UPDATE_COMPLETE);
-        SDL_FlushEvent(SDL_EVENT_GAMEPAD_AXIS_MOTION);
-        SDL_FlushEvent(SDL_EVENT_GAMEPAD_UPDATE_COMPLETE);
-        SDL_Event e;
-        if (SDL_PeepEvents(&e, 1, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) return;
-        for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++) {
-            if (!gfx.gamepads[i].pad) continue;
-            for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++) {
-                int d = SDL_GetGamepadAxis(gfx.gamepads[i].pad, (SDL_GamepadAxis)a) - axes[i][a];
-                if (d >= GFX_GAMEPAD_AXIS_WAKE || d <= -GFX_GAMEPAD_AXIS_WAKE) return;
-            }
-        }
-        Uint64 now = SDL_GetTicks();
-        if (now >= end) return;
-        Uint64 step = end - now;
-        if (step > GFX_GAMEPAD_POLL_MS) step = GFX_GAMEPAD_POLL_MS;
-        gfx_wait_events((int)step);
-        SDL_UpdateJoysticks();
-    }
-}
-
-/* frame()'s wait after a frame that drew nothing. It reads the pads itself
-   while one is open that the system doesn't wake it for. */
+/* frame()'s wait after a frame that drew nothing. */
 static void gfx_idle_wait(int ms) {
     bool read = false;
     for (int i = 0; i < GS_GFX_MAX_GAMEPADS; i++)
         if (gfx.gamepads[i].pad && !gfx.gamepads[i].wakes) read = true;
     gfx.waiting = true;
-    if (read && gfx.focused) gfx_wait_reading_pads(ms);
-    else gfx_wait_events(ms);
+    gfx_wait_events(read && gfx.focused ? GFX_GAMEPAD_WAIT_MS : ms);
     gfx.waiting = false;
 }
 
@@ -1160,7 +1122,7 @@ uint8_t gs_gfx_frame(void) {
     }
     if (gfx.dev) gfx_submit();
     gfx.gpu_work = false;
-    if (gfx.window && gfx.frames > 0 && !drew && gfx.expose <= 0) {
+    if (gfx.window && gfx.frames > 0 && !drew && gfx.expose <= 0 && !gfx.quit) {
         gfx_idle_wait(GFX_IDLE_WAIT_MS);
         gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
     }
