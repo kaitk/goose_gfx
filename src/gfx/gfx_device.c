@@ -569,6 +569,9 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
             gs_gfx_close();
             return false;
         }
+        /* SDL on macOS 14+ doesn't activate the app at launch, so a window started from
+           a terminal opens unfocused and drops input: raising it activates the app. */
+        if (!(flags & GS_GFX_WINDOW_HIDDEN)) SDL_RaiseWindow(gfx.window);
         if (flags & GS_GFX_NO_VSYNC) {
             /* Immediate first: full screen, NVIDIA's Vulkan driver holds mailbox
                to the display's refresh. */
