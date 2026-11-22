@@ -261,6 +261,9 @@ fields in the same order, and the same constant values.
   of blocks, which a mip's width need not be. They can't be read back or
   given `generate_mips`. `format_supported` asks the device whether it
   samples a format: BC is a desktop GPU's, ASTC a mobile or Apple GPU's.
+* **Multisampling** differs by format and GPU: `samples_supported` asks
+  whether the device makes a target of a format with 2, 4 or 8 samples, so a
+  multisampled HDR target can fall back to another format before it is made.
 * **Shaders**: the device takes SPIR-V where it can, else DXBC, else MSL. DXBC
   is the blob's HLSL compiled at load time by `d3dcompiler_47.dll`, which ships
   with Windows 10 and 11, loaded by name. Each SDL shader is made once per blob.

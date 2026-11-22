@@ -717,6 +717,9 @@ extern fn generate_mips(t: Texture) = "gs_gfx_generate_mips";
 // Whether this device can make a 2D texture of `format` with `usage`. Ask
 // before using a compressed format, and fall back to another if not.
 extern fn format_supported(format: i32, usage: i32) -> bool = "gs_gfx_format_supported";
+// Whether this device can make a target of `format` with `samples` (1, 2, 4
+// or 8) samples: MSAA support differs by format and GPU.
+extern fn samples_supported(format: i32, samples: i32) -> bool = "gs_gfx_samples_supported";
 extern fn texture_info_into(t: Texture, out: TextureDesc&) -> bool = "gs_gfx_texture_info";
 fn texture_info(t: Texture) -> TextureDesc {
     var d = TextureDesc { width: 0, height: 0 };
