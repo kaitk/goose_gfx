@@ -666,6 +666,16 @@ uint8_t gs_gfx_format_supported(int32_t format, int32_t usage) {
                                         (SDL_GPUTextureUsageFlags)usage);
 }
 
+/* Whether this device can make a color or depth target of `format` with
+   `samples` (1, 2, 4 or 8) samples. */
+uint8_t gs_gfx_samples_supported(int32_t format, int32_t samples) {
+    if (!gfx_need_device("samples_supported")) return 0;
+    SDL_GPUTextureFormat f;
+    if (!gfx_texture_format(format, &f) || gfx_is_compressed(format)) return 0;
+    if (samples != 1 && samples != 2 && samples != 4 && samples != 8) return 0;
+    return SDL_GPUTextureSupportsSampleCount(gfx.dev, f, gfx_samples(samples));
+}
+
 void gs_gfx_release_texture(gs_gfx_texture t) {
     if (!gfx_need_device("release_texture")) return;
     if (t.id && (t.id == gfx.screen.id || t.id == gfx.screen_depth.id)) {
