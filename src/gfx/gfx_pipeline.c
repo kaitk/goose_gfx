@@ -354,6 +354,7 @@ SDL_GPUGraphicsPipeline *gfx_pipeline_for(gfx_pipeline_slot *p, const gfx_target
     ci.rasterizer_state.enable_depth_bias = d->depth_bias != 0.0f || d->depth_bias_slope != 0.0f;
     ci.rasterizer_state.enable_depth_clip = true;
     ci.multisample_state.sample_count = t->samples;
+    ci.multisample_state.enable_alpha_to_coverage = d->alpha_to_coverage && t->samples != SDL_GPU_SAMPLECOUNT_1;
     ci.depth_stencil_state.compare_op = d->depth_compare ? (SDL_GPUCompareOp)d->depth_compare
                                                          : SDL_GPU_COMPAREOP_LESS;
     ci.depth_stencil_state.enable_depth_test = d->depth_test && t->has_depth;
