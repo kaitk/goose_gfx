@@ -246,6 +246,9 @@ fields in the same order, and the same constant values.
   packed one after another as a Goose struct lays out its fields, per vertex
   from buffer 0, from `instance_location` on per instance from buffer 1.
   `PipelineDesc.formats` overrides a location's format, for bytes as colors.
+* **Alpha-to-coverage** (`PipelineDesc.alpha_to_coverage`) turns the first
+  target's alpha into a sample mask in a multisampled target, for cut-out
+  foliage and fences without sorting; with one sample it does nothing.
 * **Copies are in program order.** A new resource's first contents go through
   a command buffer of their own; any other upload, readback or mip generation
   is recorded in the frame's command buffer, and so happens between passes. A

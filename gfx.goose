@@ -297,6 +297,9 @@ struct PipelineDesc {
     depth_bias: f32 = 0.0,
     depth_bias_slope: f32 = 0.0,
     formats: u8[16] = [0; 16],      // by location, a VERTEX_* override
+    // In a multisampled target, the fragment's alpha also masks the samples it
+    // covers (alpha-to-coverage); with one sample, nothing.
+    alpha_to_coverage: bool = false,
 }
 
 // One input event of the last frame. The fields a kind has are the ones

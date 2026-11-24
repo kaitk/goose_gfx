@@ -98,6 +98,8 @@ typedef struct {
     /* Per location, the attribute format a vertex buffer supplies; 0: the
        shader input's own type, as f32/i32/u32 components. */
     uint8_t formats[16];
+    /* In a multisampled target, alpha also masks the covered samples. */
+    uint8_t alpha_to_coverage;
 } gs_gfx_pipeline_desc;
 
 typedef struct {
