@@ -38,6 +38,15 @@ static Uint64 timed_frame(void) {
     return SDL_GetTicks() - t;
 }
 
+/* Whether a frame() waits its full second within 5 s; until one does, the
+   window may still be showing. */
+static bool idles(void) {
+    Uint64 start = SDL_GetTicks();
+    while (SDL_GetTicks() - start < 5000)
+        if (timed_frame() >= 900) return true;
+    return false;
+}
+
 /* WAIT_WHEN_IDLE with SDL's virtual gamepad: a press let go before frame()
    counts, and with a pad open the wait is short, so a press or the slightest
    stick move shows within a frame or two. */
@@ -96,10 +105,7 @@ static void wait_checks(void) {
     check(gs_gfx_open(title, 64, 48, GS_GFX_WINDOW_HIDDEN | GS_GFX_WAIT_WHEN_IDLE),
           "open WAIT_WHEN_IDLE");
     gs_gfx_frame();
-    /* Until a frame waits its full second, the window may still be showing. */
-    bool idle = false;
-    for (int i = 0; i < 12 && !idle; i++) idle = timed_frame() >= 900;
-    check(idle, "a frame that drew nothing waits");
+    check(idles(), "a frame that drew nothing waits");
     check(gs_gfx_delta_time() < 0.5, "delta_time() leaves out the wait");
     gs_gfx_pass_desc pass;
     SDL_zero(pass);
@@ -108,9 +114,7 @@ static void wait_checks(void) {
     check(gs_gfx_begin_pass(&pass), "clear the screen");
     gs_gfx_end_pass();
     check(timed_frame() < 500, "a frame that drew doesn't wait");
-    idle = false;
-    for (int i = 0; i < 12 && !idle; i++) idle = timed_frame() >= 900;
-    check(idle, "the frame after it waits again");
+    check(idles(), "the frame after it waits again");
     wake_event = SDL_RegisterEvents(1);
     SDL_AddTimer(200, push_wake, NULL);
     Uint64 woken = timed_frame();
@@ -142,9 +146,7 @@ static void window_only_checks(void) {
     check(screen.x == pw && screen.y == ph, "the screen size is the window's in pixels");
     check(gs_gfx_set_cursor(GS_GFX_CURSOR_POINTER), "WINDOW_ONLY sets the cursor");
     gs_gfx_frame();
-    bool idle = false;
-    for (int i = 0; i < 12 && !idle; i++) idle = timed_frame() >= 900;
-    check(idle, "a frame the renderer showed nothing in waits");
+    check(idles(), "a frame the renderer showed nothing in waits");
     check(!gs_gfx_needs_present(), "nothing to present after the wait");
     gs_gfx_presented(1);
     check(timed_frame() < 500, "a frame the renderer showed doesn't wait");

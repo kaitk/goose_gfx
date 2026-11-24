@@ -423,16 +423,25 @@ static bool gfx_start_window_only(bool windowed, gs_gfx_bytes title, int64_t wid
                                             SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
 #elif defined(SDL_PLATFORM_LINUX)
         SDL_PropertiesID props = SDL_GetWindowProperties(gfx.window);
-        if (SDL_strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0) {
+        const char *driver = SDL_GetCurrentVideoDriver();
+        if (SDL_strcmp(driver, "wayland") == 0) {
             gfx.native_kind = GS_GFX_NATIVE_WAYLAND;
             gfx.native_display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
             gfx.native = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
-        } else {
+        } else if (SDL_strcmp(driver, "x11") == 0) {
             gfx.native_kind = GS_GFX_NATIVE_X11;
             gfx.native_display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
             gfx.native = (void *)(uintptr_t)SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+        } else {
+            gfx_fail("WINDOW_ONLY: SDL's %s video driver gives no native window", driver);
+            gs_gfx_close();
+            return false;
         }
         if (!gfx.native_display) gfx.native = NULL;
+#else
+        gfx_fail("WINDOW_ONLY: no native window on this platform");
+        gs_gfx_close();
+        return false;
 #endif
         if (!gfx.native) {
             gfx_sdl_fail("getting the window's native handle");
@@ -452,13 +461,26 @@ static bool gfx_start_window_only(bool windowed, gs_gfx_bytes title, int64_t wid
     return true;
 }
 
-uint64_t gs_gfx_native_window(void) { return (uint64_t)(uintptr_t)gfx.native; }
+uint64_t gs_gfx_native_window(void) {
+#ifdef SDL_PLATFORM_ANDROID
+    /* SDL frees the ANativeWindow when the app goes to the background and
+       makes a new one when it comes back, so read it each time. */
+    if (gfx.window)
+        return (uint64_t)(uintptr_t)SDL_GetPointerProperty(
+            SDL_GetWindowProperties(gfx.window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+#endif
+    return (uint64_t)(uintptr_t)gfx.native;
+}
 
 uint64_t gs_gfx_native_display(void) { return (uint64_t)(uintptr_t)gfx.native_display; }
 
 int64_t gs_gfx_native_kind(void) { return gfx.native_kind; }
 
 void gs_gfx_presented(uint8_t shown) {
+    if (!gfx.window_only) {
+        gfx_misuse("presented: only for WINDOW_ONLY, whose renderer presents itself");
+        return;
+    }
     gfx.presented = shown != 0;
     if (shown) gfx.expose = 0;
 }
@@ -478,22 +500,6 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
     gfx_init_tables();
     SDL_SetAssertionHandler(gfx_assert_handler, NULL);
     SDL_SetHint(SDL_HINT_APP_NAME, "Goose");
-#ifdef SDL_PLATFORM_ANDROID
-    /* On Android each pass of SDL_WaitEventTimeout() pushes a poll sentinel that
-       ends the wait at once, so WAIT_WHEN_IDLE's wait would spin. frame() drains
-       all events itself, so it needs no sentinel. */
-    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
-#endif
-    /* With a pad open, SDL_WaitEventTimeout() wakes every 1 ms to read it.
-       WAIT_WHEN_IDLE reads the pads in frame() instead, and caps the wait
-       unless the system wakes it. */
-    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
-#if defined(SDL_PLATFORM_APPLE) || defined(SDL_PLATFORM_ANDROID)
-    /* SDL's HID drivers report a pad only when gfx reads it; without them the
-       GameController framework or Android reads it and says when it changes.
-       SDL reads the hint as the gamepad subsystem starts, below. */
-    if (flags & GS_GFX_SYSTEM_GAMEPADS) SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
-#endif
     if (windowed) {
         if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) return gfx_sdl_fail("initializing SDL video");
     } else {
@@ -513,6 +519,23 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
         if (!ok && !SDL_InitSubSystem(SDL_INIT_VIDEO)) return gfx_sdl_fail("initializing SDL video");
     }
     gfx.video_inited = true;
+#ifdef SDL_PLATFORM_ANDROID
+    /* On Android each pass of SDL_WaitEventTimeout() pushes a poll sentinel that
+       ends the wait at once, so WAIT_WHEN_IDLE's wait would spin. frame() drains
+       all events itself, so it needs no sentinel. Set once video is up, as
+       close() resets it. */
+    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+#endif
+    /* With a pad open, SDL_WaitEventTimeout() wakes every 1 ms to read it.
+       WAIT_WHEN_IDLE reads the pads in frame() instead, and caps the wait
+       unless the system wakes it. */
+    if (flags & GS_GFX_WAIT_WHEN_IDLE) SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
+#if defined(SDL_PLATFORM_APPLE) || defined(SDL_PLATFORM_ANDROID)
+    /* SDL's HID drivers report a pad only when gfx reads it; without them the
+       GameController framework or Android reads it and says when it changes.
+       SDL reads the hint as the gamepad subsystem starts, below. */
+    if (flags & GS_GFX_SYSTEM_GAMEPADS) SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+#endif
     /* No gamepad subsystem is no gamepads, not a failure. */
     gfx.gamepad_inited = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (flags & GS_GFX_WINDOW_ONLY) return gfx_start_window_only(windowed, title, width, height, flags);
@@ -1097,6 +1120,11 @@ uint8_t gs_gfx_gamepad_rumble(int64_t slot, float low, float high, int64_t ms) {
                              duration);
 }
 
+/* A window event for gfx's window; headless, an injected one. */
+static bool gfx_own_window(const SDL_Event *e) {
+    return e->window.windowID == (gfx.window ? SDL_GetWindowID(gfx.window) : 0);
+}
+
 uint8_t gs_gfx_frame(void) {
     if (!gfx_need_open("frame")) return 0;
     if (gfx.pass || gfx.cpass) {
@@ -1110,24 +1138,29 @@ uint8_t gs_gfx_frame(void) {
        WINDOW_ONLY's renderer presents itself and says whether it did. */
     bool on_demand = (gfx.flags & GS_GFX_WAIT_WHEN_IDLE) != 0;
     bool work = gfx.gpu_work;           /* before the present's own blit */
-    bool drew = !on_demand || (gfx.window_only ? gfx.presented : work || gfx.expose > 0);
+    bool presented = gfx.presented;
+    bool drew = !on_demand || (gfx.window_only ? presented : work || gfx.expose > 0 || gfx.unshown);
+    bool shown = drew;
     gfx.presented = false;
     if (gfx.window_only) {
         /* needs_present() stays true a few frames after an expose, as gfx
-           retries its own present. */
-        if (!drew && gfx.expose > 0) gfx.expose--;
+           retries its own present, with WAIT_WHEN_IDLE or without. */
+        if (!presented && gfx.expose > 0) gfx.expose--;
     } else if (gfx.window && gfx.frames > 0 && drew) {
         /* No image: Android recreates the surface on resume, so retry for a few
-           frames before waiting. A minimized window waits after those too. */
-        if (gfx_present()) gfx.expose = 0;
+           frames, then at each idle wakeup until one comes. */
+        shown = gfx_present();
+        gfx.unshown = !shown;
+        if (shown) gfx.expose = 0;
         else if (work) gfx.expose = GFX_PRESENT_TRIES;
         else if (gfx.expose > 0) gfx.expose--;
     }
     if (gfx.dev) gfx_submit();
     gfx.gpu_work = false;
-    if (gfx.window && gfx.frames > 0 && !drew && gfx.expose <= 0 && !gfx.quit) {
+    if (on_demand && gfx.window && gfx.frames > 0 && !shown && gfx.expose <= 0 && !gfx.quit) {
+        uint64_t t0 = SDL_GetTicksNS();
         gfx_idle_wait(GFX_IDLE_WAIT_MS);
-        gfx.last_ns = SDL_GetTicksNS();     /* delta_time() leaves out the wait */
+        gfx.last_ns += SDL_GetTicksNS() - t0;   /* delta_time() leaves out the wait */
     }
     memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
     memset(gfx.released_keys, 0, sizeof gfx.released_keys);
@@ -1207,13 +1240,13 @@ uint8_t gs_gfx_frame(void) {
                 break;
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
             case SDL_EVENT_WINDOW_FOCUS_LOST:
-                if (e.window.windowID == (gfx.window ? SDL_GetWindowID(gfx.window) : 0))
-                    gfx_focus(e.type == SDL_EVENT_WINDOW_FOCUS_GAINED);
+                if (gfx_own_window(&e)) gfx_focus(e.type == SDL_EVENT_WINDOW_FOCUS_GAINED);
                 break;
             case SDL_EVENT_WINDOW_RESIZED:
                 gfx_update_input_scale();
                 break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+                if (!gfx_own_window(&e)) break;
                 gfx_update_input_scale();
                 resized = true;
                 gfx.expose = GFX_PRESENT_TRIES;
@@ -1221,6 +1254,8 @@ uint8_t gs_gfx_frame(void) {
             case SDL_EVENT_WINDOW_EXPOSED:
             case SDL_EVENT_WINDOW_SHOWN:
             case SDL_EVENT_WINDOW_RESTORED:
+                if (gfx_own_window(&e)) gfx.expose = GFX_PRESENT_TRIES;
+                break;
             case SDL_EVENT_DID_ENTER_FOREGROUND:
                 gfx.expose = GFX_PRESENT_TRIES;
                 break;

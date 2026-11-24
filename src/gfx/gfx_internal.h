@@ -196,9 +196,11 @@ typedef struct {
     int64_t frames;
     /* WAIT_WHEN_IDLE: frame() presents only after GPU work since the last one,
        or while expose counts down (the window was exposed, restored or resized,
-       or a drawn frame got no image); otherwise it waits for an event. */
+       or a drawn frame got no image); otherwise it waits for an event. While
+       a drawn frame is unshown, each wakeup from the wait tries again. */
     bool gpu_work;
     int expose;
+    bool unshown;
     bool lost;                          /* an SDL call failed with DEVICE_LOST */
     bool wake_watched;                  /* iOS: the wait's event watch is added */
 

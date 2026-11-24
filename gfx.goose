@@ -345,8 +345,9 @@ extern fn open_headless(width: i64, height: i64, flags: i64) -> bool = "gs_gfx_o
 fn open_headless(width: i64, height: i64) -> bool { open_headless(width, height, 0) }
 // WINDOW_ONLY: the window's native handle for the renderer that draws into
 // it, as a u64: a CAMetalLayer on Apple's systems, the HWND on Windows, the
-// ANativeWindow on Android, on Linux the wl_surface on Wayland or the X11
-// window's number; 0 headless.
+// ANativeWindow on Android (a new one each time the app comes back to the
+// foreground, 0 in the background), on Linux the wl_surface on Wayland or the
+// X11 window's number; 0 headless.
 extern fn native_window() -> u64 = "gs_gfx_native_window";
 // WINDOW_ONLY on Linux: the wl_display or X11 Display* that native_window()
 // belongs to; 0 elsewhere and headless.
